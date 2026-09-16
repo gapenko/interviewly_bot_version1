@@ -1,0 +1,124 @@
+"""
+handlers/reviews.py — система отзывов участников и премодерация для администраторов.
+"""
+import logging
+from aiogram import F, Router, types
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+from config import ADMIN_IDS
+from keyboards import get_admin_review_kb, get_stars_rating_kb
+from states import ReviewStates
+from storage import add_review, get_approved_reviews, set_review_status
+
+logger = logging.getLogger(__name__)
+router = Router(name="reviews")
+
+
+@router.message(Command("reviews"))
+@router.callback_query(F.data == "btn_reviews_show")
+async def cmd_reviews(event: types.Message | types.CallbackQuery):
+    is_cb = isinstance(event, types.CallbackQuery)
+    msg = event.message if is_cb else event
+    if is_cb:
+        await event.answer()
+
+    approved = await get_approved_reviews()
+    if not approved:
+        text = "⭐️ <b>Пока отзывов нет. Вы можете оставить первый отзыв после собеседования!</b>"
+    else:
+        text = "⭐️ <b>Отзывы участников о тренажёре:</b>\n\n"
+        for r in approved[-5:]:
+            stars = "⭐️" * int(r.get("rating", 5))
+            text += f"👤 <b>{r['full_name']}</b> ({stars})\n<i>«{r['text']}»</i>\n📅 <code>{r.get('created_at', '')}</code>\n\n"
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✍️ Оставить свой отзыв", callback_data="review_start_fsm")]
+        ]
+    )
+    if is_cb:
+        await msg.answer(text, reply_markup=kb, parse_mode="HTML")
+    else:
+        await msg.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "review_start_fsm")
+async def cb_start_review(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.answer(
+        "⭐️ <b>Оцените качество и пользу AI-собеседования:</b>",
+        reply_markup=get_stars_rating_kb(),
+        parse_mode="HTML",
+    )
+    await state.set_state(ReviewStates.waiting_rating)
+
+
+@router.callback_query(ReviewStates.waiting_rating, F.data.startswith("rate_star_"))
+async def cb_select_stars(callback: types.CallbackQuery, state: FSMContext):
+    rating = int(callback.data.replace("rate_star_", ""))
+    await state.update_data(rating=rating)
+    await callback.answer()
+    await callback.message.answer(
+        f"Вы выбрали {rating} ⭐.\n\n"
+        f"✍️ Напишите ваш отзыв текстом (что понравилось, помогло ли на реальном собеседовании, что улучшить):",
+        parse_mode="HTML",
+    )
+    await state.set_state(ReviewStates.waiting_text)
+
+
+@router.message(ReviewStates.waiting_text, F.text)
+async def handle_review_text(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    rating = data.get("rating", 5)
+    text = message.text.strip()
+
+    rev_id = await add_review(
+        user_id=message.from_user.id,
+        username=message.from_user.username,
+        full_name=message.from_user.full_name,
+        rating=rating,
+        text=text,
+    )
+    await state.clear()
+    await message.answer("✅ <b>Спасибо за обратную связь!</b>\nВаш отзыв отправлен на модерацию и скоро появится в общем списке.", parse_mode="HTML")
+
+    # Уведомление администраторам для модерации в 1 клик
+    stars_str = "⭐️" * rating
+    adm_alert = (
+        f"📬 <b>НОВЫЙ ОТЗЫВ #{rev_id}</b>\n\n"
+        f"👤 <b>От:</b> {message.from_user.full_name} (@{message.from_user.username or 'отсутствует'})\n"
+        f"🆔 <code>{message.from_user.id}</code>\n"
+        f"⭐️ <b>Оценка:</b> {stars_str}\n\n"
+        f"💬 <b>Текст:</b>\n{text}"
+    )
+
+    for admin_id in ADMIN_IDS:
+        try:
+            await message.bot.send_message(
+                admin_id,
+                adm_alert,
+                reply_markup=get_admin_review_kb(rev_id),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error("Не удалось доставить отзыв админу %s: %s", admin_id, e)
+
+
+@router.callback_query(F.data.startswith("adm_rev_ok:"))
+async def cb_approve_rev(callback: types.CallbackQuery):
+    rev_id = int(callback.data.replace("adm_rev_ok:", ""))
+    await set_review_status(rev_id, True)
+    await callback.answer("Отзыв одобрен и опубликован")
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.reply(f"✅ Отзыв #{rev_id} опубликован для всех пользователей.")
+
+
+@router.callback_query(F.data.startswith("adm_rev_no:"))
+async def cb_reject_rev(callback: types.CallbackQuery):
+    rev_id = int(callback.data.replace("adm_rev_no:", ""))
+    await set_review_status(rev_id, False)
+    await callback.answer("Отзыв отклонён")
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.reply(f"❌ Отзыв #{rev_id} отклонён.")
