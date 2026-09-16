@@ -3,9 +3,12 @@ main.py — точка входа: инициализация бота, дисп
 """
 import asyncio
 import logging
+import socket
 
+import aiohttp
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 
 from config import BOT_TOKEN
@@ -19,16 +22,32 @@ logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
+    # 1. Принудительно отключаем IPv6 (AF_INET = только чистый IPv4)
+    # Это устраняет таймауты aiohappyeyeballs в облачных контейнерах
+    connector = aiohttp.TCPConnector(
+        family=socket.AF_INET,
+        ssl=True,
+    )
+    
+    # 2. Увеличиваем таймаут на опрос Telegram
+    timeout = aiohttp.ClientTimeout(total=45, connect=15)
+    session = AiohttpSession(connector=connector, timeout=timeout)
+
     bot = Bot(
         token=BOT_TOKEN,
+        session=session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher()
     dp.include_router(main_router)
 
     logger.info("Бот запускается...")
-    # Сбрасываем накопившиеся за время простоя апдейты
-    await bot.delete_webhook(drop_pending_updates=True)
+
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+    except Exception as e:
+        logger.warning("Пропуск удаления вебхука: %s", e)
+
     await dp.start_polling(bot)
 
 
