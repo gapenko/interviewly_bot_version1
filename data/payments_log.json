@@ -1,0 +1,42 @@
+[
+  {
+    "telegram_id": 8991887809,
+    "username": "moptog",
+    "amount_stars": 100,
+    "currency": "RUB",
+    "telegram_payment_charge_id": "32320fec-000f-5001-9000-1575ccf1e051",
+    "provider_payment_charge_id": "32320fec-000f-5001-9000-1575ccf1e051",
+    "invoice_payload": "yookassa_32320fec-000f-5001-9000-1575ccf1e051",
+    "timestamp": "2026-09-08T12:15:16.128379+00:00"
+  },
+  {
+    "telegram_id": 8991887809,
+    "username": "moptog",
+    "amount_stars": 100,
+    "currency": "RUB",
+    "telegram_payment_charge_id": "32328175-000f-5001-8000-15a5efc16c53",
+    "provider_payment_charge_id": "32328175-000f-5001-8000-15a5efc16c53",
+    "invoice_payload": "yookassa_32328175-000f-5001-8000-15a5efc16c53",
+    "timestamp": "2026-09-08T20:19:26.107218+00:00"
+  },
+  {
+    "telegram_id": 601176367,
+    "username": "Croliliya",
+    "amount_stars": 100,
+    "currency": "RUB",
+    "telegram_payment_charge_id": "3232860b-000f-5001-8000-10fa6bea8442",
+    "provider_payment_charge_id": "3232860b-000f-5001-8000-10fa6bea8442",
+    "invoice_payload": "yookassa_3232860b-000f-5001-8000-10fa6bea8442",
+    "timestamp": "2026-09-08T20:39:04.747938+00:00"
+  },
+  {
+    "telegram_id": 8991887809,
+    "username": "moptog",
+    "amount_stars": 100,
+    "currency": "RUB",
+    "telegram_payment_charge_id": "3233823b-000f-5001-9000-15fa2c09f980",
+    "provider_payment_charge_id": "3233823b-000f-5001-9000-15fa2c09f980",
+    "invoice_payload": "yookassa_3233823b-000f-5001-9000-15fa2c09f980",
+    "timestamp": "2026-09-09T14:35:13.442694+00:00"
+  }
+]
