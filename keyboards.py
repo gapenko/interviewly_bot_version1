@@ -1,8 +1,5 @@
 """
 keyboards.py — клавиатуры бота.
-Все кнопки адаптированы под мобильные экраны Telegram:
-- Никаких обрезок текста многоточием (...)
-- Оптимальная компоновка (1 в ряд для ключевых действий, компактные пары для коротких).
 """
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 import config
@@ -23,10 +20,6 @@ remove_reply_kb = ReplyKeyboardRemove()
 # =========================================================
 
 def get_interview_toolbar() -> InlineKeyboardMarkup:
-    """
-    Кнопки под вопросом.
-    Каждое действие в отдельную строку или компактными парами без усечения.
-    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -55,10 +48,6 @@ def get_reset_confirm_keyboard() -> InlineKeyboardMarkup:
 # =========================================================
 
 def get_tracks_keyboard() -> InlineKeyboardMarkup:
-    """
-    Направления по 1 в ряд, чтобы названия специализаций
-    читались целиком без сокращений.
-    """
     buttons = [[InlineKeyboardButton(text=name, callback_data=f"track_{key}")] for key, name in TRACKS.items()]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -83,16 +72,40 @@ def get_ready_keyboard() -> InlineKeyboardMarkup:
 
 
 # =========================================================
-# ПЛАТЕЖИ И ФИНАЛ
+# ДИНАМИЧЕСКИЙ ЭКРАН ОПЛАТЫ (СКИДКИ, ПРОМОКОДЫ, БОНУСЫ)
 # =========================================================
 
+def get_dynamic_paywall_keyboard(
+    rub_price: int,
+    stars_price: int,
+    has_bonuses: bool = False,
+    bonuses_applied: bool = False,
+    has_promo: bool = False,
+) -> InlineKeyboardMarkup:
+    buttons = []
+
+    # Если сумма после скидок больше 0 — выводим кнопки оплаты
+    if rub_price > 0:
+        buttons.append([InlineKeyboardButton(text=f"💳 СБП / Карты — {rub_price} ₽", callback_data="pay_yookassa")])
+        buttons.append([InlineKeyboardButton(text=f"⭐️ Оплатить {stars_price} Stars", callback_data="pay_stars_invoice")])
+    else:
+        # Если скидка 100%
+        buttons.append([InlineKeyboardButton(text="🎉 Открыть доступ бесплатно", callback_data="pay_free_unlock")])
+
+    # Кнопка списания бонусов (если они есть и еще не списаны)
+    if has_bonuses and not bonuses_applied:
+        buttons.append([InlineKeyboardButton(text="🎁 Списать бонусы со счёта", callback_data="pay_apply_bonuses")])
+
+    # Кнопка промокода (если еще не применен)
+    if not has_promo:
+        buttons.append([InlineKeyboardButton(text="🎟 Ввести промокод", callback_data="pay_enter_promocode")])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 def get_paywall_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=f"💳 СБП / Карты РФ — {SBP_PRICE_RUB} ₽", callback_data="pay_yookassa")],
-            [InlineKeyboardButton(text=f"⭐️ Telegram Stars — {ACCESS_PRICE_STARS} XTR", callback_data="pay_stars_invoice")],
-        ]
-    )
+    """Для обратной совместимости."""
+    return get_dynamic_paywall_keyboard(SBP_PRICE_RUB, ACCESS_PRICE_STARS)
 
 
 def get_finished_keyboard() -> InlineKeyboardMarkup:
@@ -147,14 +160,10 @@ def get_admin_review_kb(review_id: int) -> InlineKeyboardMarkup:
 
 
 # =========================================================
-# АДМИН-ПАНЕЛЬ (100% ЧИТАЕМОСТЬ НА ТЕЛЕФОНЕ)
+# АДМИН-ПАНЕЛЬ
 # =========================================================
 
 def get_admin_keyboard() -> InlineKeyboardMarkup:
-    """
-    Лаконичные надписи и правильная сетка:
-    текст умещается на любом мобильном экране без троеточий (...).
-    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [

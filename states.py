@@ -1,5 +1,5 @@
 """
-states.py — FSM-состояния.
+states.py — FSM-состояния бота.
 """
 from aiogram.fsm.state import State, StatesGroup
 
@@ -28,6 +28,10 @@ class SupportStates(StatesGroup):
 class ReviewStates(StatesGroup):
     waiting_rating = State()
     waiting_text = State()
+
+
+class PaymentStates(StatesGroup):
+    waiting_promocode = State()
 
 
 class AdminStates(StatesGroup):
