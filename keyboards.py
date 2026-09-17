@@ -1,6 +1,5 @@
 """
-keyboards.py — все инлайн-клавиатуры приложения.
-Нижние Reply-кнопки полностью исключены.
+keyboards.py — клавиатуры бота. Reply-кнопки исключены полностью.
 """
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 import config
@@ -16,7 +15,7 @@ SBP_PRICE_RUB = getattr(
 remove_reply_kb = ReplyKeyboardRemove()
 
 
-# --- ИНТЕРВЬЮ: КАРТОЧКА ВОПРОСА ---
+# --- ИНТЕРВЬЮ ---
 
 def get_interview_toolbar() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -43,8 +42,6 @@ def get_reset_confirm_keyboard() -> InlineKeyboardMarkup:
         ]
     )
 
-
-# --- ВЫБОР НАПРАВЛЕНИЯ ---
 
 def get_tracks_keyboard() -> InlineKeyboardMarkup:
     buttons = []
@@ -78,8 +75,6 @@ def get_ready_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-# --- ПЛАТЕЖИ И ФИНАЛ ---
-
 def get_paywall_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -99,7 +94,6 @@ def get_finished_keyboard() -> InlineKeyboardMarkup:
 
 
 def get_resume_menu_keyboard() -> InlineKeyboardMarkup:
-    """Меню резюме для handlers/resume.py."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📄 Черновик резюме", callback_data="resume_draft")],
@@ -133,31 +127,57 @@ def get_admin_review_kb(review_id: int) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="✅ Одобрить", callback_data=f"adm_rev_ok:{review_id}"),
                 InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_rev_no:{review_id}"),
+                InlineKeyboardButton(text="🗑 Удалить", callback_data=f"adm_rev_del:{review_id}"),
             ]
         ]
     )
 
 
-# --- АДМИН-ПАНЕЛЬ ---
+# --- МНОГОФУНКЦИОНАЛЬНАЯ АДМИН-ПАНЕЛЬ ---
 
 def get_admin_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="📊 Общая статистика", callback_data="admin_stats"),
-                InlineKeyboardButton(text="⭐️ Отзывы на модерации", callback_data="admin_pending_reviews"),
+                InlineKeyboardButton(text="📊 Аналитика и финансы", callback_data="admin_stats"),
+                InlineKeyboardButton(text="⭐️ Модерация отзывов", callback_data="admin_reviews_hub"),
             ],
             [
-                InlineKeyboardButton(text="🔗 UTM-ссылки каналов", callback_data="admin_campaigns"),
-                InlineKeyboardButton(text="⭐️ Баланс Stars", callback_data="admin_stars"),
+                InlineKeyboardButton(text="🔍 Поиск и CRM юзера", callback_data="admin_find_user"),
+                InlineKeyboardButton(text="📢 Рассылка кандидатам", callback_data="admin_broadcast"),
             ],
             [
-                InlineKeyboardButton(text="📢 Создать рассылку", callback_data="admin_broadcast"),
-                InlineKeyboardButton(text="➕ Создать рекламную ссылку", callback_data="admin_create_camp"),
+                InlineKeyboardButton(text="🔗 UTM-каналы рекламы", callback_data="admin_campaigns"),
+                InlineKeyboardButton(text="🎟 Промокоды и скидки", callback_data="admin_promos_hub"),
             ],
             [
+                InlineKeyboardButton(text="👥 Управление админами", callback_data="admin_team_hub"),
                 InlineKeyboardButton(text="💾 Выгрузить базы (JSON)", callback_data="admin_export_db"),
+            ],
+            [
                 InlineKeyboardButton(text="❌ Закрыть панель", callback_data="admin_close"),
             ],
+        ]
+    )
+
+
+def get_user_manage_kb(target_id: int, has_paid: bool) -> InlineKeyboardMarkup:
+    paid_btn = (
+        InlineKeyboardButton(text="🚫 Забрать доступ", callback_data=f"adm_u_revoke:{target_id}")
+        if has_paid
+        else InlineKeyboardButton(text="👑 Выдать доступ", callback_data=f"adm_u_grant:{target_id}")
+    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [paid_btn],
+            [
+                InlineKeyboardButton(text="➕ 150 бонусов", callback_data=f"adm_u_addb:{target_id}:150"),
+                InlineKeyboardButton(text="➖ 150 бонусов", callback_data=f"adm_u_addb:{target_id}:-150"),
+            ],
+            [
+                InlineKeyboardButton(text="🔄 Сбросить прогресс", callback_data=f"adm_u_reset:{target_id}"),
+                InlineKeyboardButton(text="✉️ Написать лично", callback_data=f"reply_support:{target_id}"),
+            ],
+            [InlineKeyboardButton(text="◀️ Назад в админку", callback_data="admin_menu")],
         ]
     )

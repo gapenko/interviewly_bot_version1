@@ -1,5 +1,5 @@
 """
-handlers/reviews.py — система отзывов участников и премодерация для администраторов.
+handlers/reviews.py — система отзывов с гарантированной отправкой постоянным админам.
 """
 import logging
 from aiogram import F, Router
@@ -12,10 +12,14 @@ from aiogram.types import (
     Message,
 )
 
-import config
 from keyboards import get_admin_review_kb, get_stars_rating_kb
 from states import ReviewStates
-from storage import add_review, get_approved_reviews, set_review_status
+from storage import (
+    add_review,
+    delete_review,
+    get_approved_reviews,
+    set_review_status,
+)
 
 logger = logging.getLogger(__name__)
 router = Router(name="reviews")
@@ -92,7 +96,7 @@ async def handle_review_text(message: Message, state: FSMContext):
         parse_mode="HTML",
     )
 
-    # Уведомление администраторам
+    # Доставка всем постоянным админам из файла data/admins.json и config.py
     stars_str = "⭐️" * rating
     adm_alert = (
         f"📬 <b>НОВЫЙ ОТЗЫВ #{rev_id} НА МОДЕРАЦИЮ</b>\n\n"
@@ -102,8 +106,10 @@ async def handle_review_text(message: Message, state: FSMContext):
         f"💬 <b>Текст:</b>\n{text}"
     )
 
-    admin_ids = getattr(config, "ADMIN_IDS", [])
-    for admin_id in admin_ids:
+    from handlers.admin import get_active_admin_ids
+    target_admins = await get_active_admin_ids()
+
+    for admin_id in target_admins:
         try:
             await message.bot.send_message(
                 admin_id,
@@ -113,21 +119,3 @@ async def handle_review_text(message: Message, state: FSMContext):
             )
         except Exception as e:
             logger.error("Не удалось доставить отзыв админу %s: %s", admin_id, e)
-
-
-@router.callback_query(F.data.startswith("adm_rev_ok:"))
-async def cb_approve_rev(callback: CallbackQuery):
-    rev_id = int(callback.data.replace("adm_rev_ok:", ""))
-    await set_review_status(rev_id, True)
-    await callback.answer("Отзыв одобрен и опубликован")
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.reply(f"✅ Отзыв #{rev_id} успешно опубликован в общем списке!")
-
-
-@router.callback_query(F.data.startswith("adm_rev_no:"))
-async def cb_reject_rev(callback: CallbackQuery):
-    rev_id = int(callback.data.replace("adm_rev_no:", ""))
-    await set_review_status(rev_id, False)
-    await callback.answer("Отзыв отклонён")
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.reply(f"❌ Отзыв #{rev_id} отклонён.")

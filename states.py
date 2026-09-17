@@ -1,5 +1,5 @@
 """
-states.py — FSM-состояния для интервью, резюме, поддержки, отзывов и админки.
+states.py — FSM-состояния.
 """
 from aiogram.fsm.state import State, StatesGroup
 
@@ -36,3 +36,7 @@ class AdminStates(StatesGroup):
     waiting_support_reply = State()
     waiting_camp_tag = State()
     waiting_camp_desc = State()
+    waiting_user_search = State()
+    waiting_promo_code = State()
+    waiting_promo_discount = State()
+    waiting_add_admin_id = State()
