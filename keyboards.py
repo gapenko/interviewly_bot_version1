@@ -1,5 +1,5 @@
 """
-keyboards.py — клавиатуры бота.
+keyboards.py — клавиатуры бота с кнопками возврата и адаптацией под мобильные экраны.
 """
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 import config
@@ -49,6 +49,7 @@ def get_reset_confirm_keyboard() -> InlineKeyboardMarkup:
 
 def get_tracks_keyboard() -> InlineKeyboardMarkup:
     buttons = [[InlineKeyboardButton(text=name, callback_data=f"track_{key}")] for key, name in TRACKS.items()]
+    buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="nav_back_to_welcome")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -72,7 +73,7 @@ def get_ready_keyboard() -> InlineKeyboardMarkup:
 
 
 # =========================================================
-# ДИНАМИЧЕСКИЙ ЭКРАН ОПЛАТЫ (СКИДКИ, ПРОМОКОДЫ, БОНУСЫ)
+# ДИНАМИЧЕСКИЙ ЭКРАН ОПЛАТЫ
 # =========================================================
 
 def get_dynamic_paywall_keyboard(
@@ -84,28 +85,32 @@ def get_dynamic_paywall_keyboard(
 ) -> InlineKeyboardMarkup:
     buttons = []
 
-    # Если сумма после скидок больше 0 — выводим кнопки оплаты
     if rub_price > 0:
         buttons.append([InlineKeyboardButton(text=f"💳 СБП / Карты — {rub_price} ₽", callback_data="pay_yookassa")])
         buttons.append([InlineKeyboardButton(text=f"⭐️ Оплатить {stars_price} Stars", callback_data="pay_stars_invoice")])
     else:
-        # Если скидка 100%
         buttons.append([InlineKeyboardButton(text="🎉 Открыть доступ бесплатно", callback_data="pay_free_unlock")])
 
-    # Кнопка списания бонусов (если они есть и еще не списаны)
     if has_bonuses and not bonuses_applied:
         buttons.append([InlineKeyboardButton(text="🎁 Списать бонусы со счёта", callback_data="pay_apply_bonuses")])
 
-    # Кнопка промокода (если еще не применен)
     if not has_promo:
         buttons.append([InlineKeyboardButton(text="🎟 Ввести промокод", callback_data="pay_enter_promocode")])
 
+    buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="nav_back_to_welcome")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def get_paywall_keyboard() -> InlineKeyboardMarkup:
-    """Для обратной совместимости."""
     return get_dynamic_paywall_keyboard(SBP_PRICE_RUB, ACCESS_PRICE_STARS)
+
+
+def get_cancel_promo_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Отмена / Назад к оплате", callback_data="cancel_promocode_input")]
+        ]
+    )
 
 
 def get_finished_keyboard() -> InlineKeyboardMarkup:
@@ -123,6 +128,7 @@ def get_resume_menu_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📄 Черновик резюме", callback_data="resume_draft")],
             [InlineKeyboardButton(text="🔍 Аудит резюме", callback_data="resume_audit")],
             [InlineKeyboardButton(text="📥 Скачать .docx", callback_data="resume_download")],
+            [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="nav_back_to_welcome")],
         ]
     )
 
@@ -140,7 +146,16 @@ def get_stars_rating_kb() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="3 ⭐", callback_data="rate_star_3"),
                 InlineKeyboardButton(text="4 ⭐", callback_data="rate_star_4"),
                 InlineKeyboardButton(text="5 ⭐", callback_data="rate_star_5"),
-            ]
+            ],
+            [InlineKeyboardButton(text="◀️ Назад к отзывам", callback_data="btn_reviews_show")],
+        ]
+    )
+
+
+def get_cancel_review_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Отмена / Назад к отзывам", callback_data="btn_reviews_show")]
         ]
     )
 
@@ -155,6 +170,14 @@ def get_admin_review_kb(review_id: int) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="🗑 Удалить из базы", callback_data=f"adm_rev_del:{review_id}"),
             ]
+        ]
+    )
+
+
+def get_support_cancel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Отмена / Назад", callback_data="nav_back_to_welcome")]
         ]
     )
 

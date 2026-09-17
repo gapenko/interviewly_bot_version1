@@ -1,6 +1,5 @@
 """
-handlers/start.py — приветствие, выбор направления, реферальная программа,
-поддержка, тестирование и восстановление прогресса.
+handlers/start.py — приветствие, выбор направления, рефералы, навигация назад и поддержка.
 """
 import logging
 from aiogram import Bot, F, Router
@@ -18,6 +17,7 @@ from config import ADMIN_IDS, FREE_QUESTIONS_COUNT
 from keyboards import (
     get_interview_toolbar,
     get_ready_keyboard,
+    get_support_cancel_keyboard,
     get_tracks_keyboard,
     get_welcome_inline_keyboard,
     remove_reply_kb,
@@ -39,7 +39,6 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     if not message.from_user:
         return
 
-    # Парсинг реферальных ссылок и рекламных кампаний
     args = message.text.split()[1] if len(message.text.split()) > 1 else None
     referrer_id = None
     campaign_tag = None
@@ -56,11 +55,11 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     user, is_new = await storage.register_user_with_ref(
         telegram_id=message.from_user.id,
         username=message.from_user.username,
+        full_name=message.from_user.full_name,
         referrer_id=referrer_id,
         campaign_tag=campaign_tag,
     )
 
-    # Если уже есть незавершённое интервью — восстанавливаем
     if user.get("track") and not user.get("finished", False) and user.get("current_question_index", 0) > 0:
         await state.set_state(InterviewStates.waiting_answer)
         await message.answer(
@@ -79,9 +78,9 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
     welcome_text = (
         f"👋 <b>Привет, {message.from_user.full_name}! Я AI-тренажёр для подготовки к IT-собеседованиям.</b>{ref_note}\n\n"
-        "Я помогу вам проверить уровень знаний, научиться отвечать уверенно и без воды, "
-        "а также подготовлю к сложным техническим и поведенческим вопросам.\n\n"
-        "Нажмите кнопку ниже, чтобы выбрать направление:"
+        "Я помогу проверить уровень знаний, научиться отвечать структурированно и без воды, "
+        "а также подготовлю к сложным техническим и поведенческим кейсам.\n\n"
+        "Выберите действие ниже или откройте меню команд слева внизу:"
     )
 
     await message.answer(
@@ -89,6 +88,29 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         reply_markup=get_welcome_inline_keyboard(),
         parse_mode="HTML",
     )
+
+
+# -------------------------------------------------------------
+# НАВИГАЦИЯ: УНИВЕРСАЛЬНЫЙ ВОЗВРАТ В ГЛАВНОЕ МЕНЮ
+# -------------------------------------------------------------
+
+@router.callback_query(F.data == "nav_back_to_welcome")
+async def cb_back_to_welcome(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await state.set_state(InterviewStates.welcome)
+    await callback.answer()
+
+    welcome_text = (
+        f"👋 <b>Главное меню AI-тренажёра</b>\n\n"
+        "Выберите действие ниже или используйте список команд в меню:"
+    )
+
+    if callback.message:
+        await callback.message.edit_text(
+            welcome_text,
+            reply_markup=get_welcome_inline_keyboard(),
+            parse_mode="HTML",
+        )
 
 
 # -------------------------------------------------------------
@@ -127,7 +149,8 @@ async def cmd_referral(event: Message | CallbackQuery):
         "🎁 <b>Реферальная программа тренажёра</b>\n\n"
         "Приглашайте друзей и готовьтесь к собеседованиям бесплатно!\n\n"
         "• За каждого приглашённого друга: <b>+150 бонусов</b>\n"
-        "• При накоплении <b>600 бонусов</b> (всего 4 друга) автоматически открывается <b>полный безлимитный доступ</b> ко всем 15 вопросам и отчётам!\n\n"
+        "• При накоплении <b>600 бонусов</b> (всего 4 друга) автоматически открывается <b>вечный доступ</b>!\n"
+        "• Бонусы можно тратить на скидку при оплате (1 бонус = 1 рубль скидки).\n\n"
         f"📊 <b>Ваша статистика:</b>\n"
         f"├ Баланс: <b>{balance} бонусов</b>\n"
         f"├ Приглашено: <b>{refs} чел.</b>\n"
@@ -140,10 +163,15 @@ async def cmd_referral(event: Message | CallbackQuery):
     share_url = f"https://t.me/share/url?url={ref_link}&text=Привет!%20Пройди%20тренировочное%20IT-собеседование%20с%20AI-ментором%20бесплатно:"
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📲 Поделиться ссылкой", url=share_url)]
+            [InlineKeyboardButton(text="📲 Поделиться ссылкой", url=share_url)],
+            [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="nav_back_to_welcome")],
         ]
     )
-    await target.answer(text, reply_markup=kb, parse_mode="HTML")
+
+    if is_cb and target:
+        await target.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    else:
+        await target.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 # -------------------------------------------------------------
@@ -185,10 +213,7 @@ async def cmd_continue(message: Message, state: FSMContext) -> None:
         return
 
     await state.set_state(InterviewStates.waiting_answer)
-    await message.answer(
-        "🔄 <b>Собеседование возобновлено!</b>",
-        parse_mode="HTML",
-    )
+    await message.answer("🔄 <b>Собеседование возобновлено!</b>", parse_mode="HTML")
     await ask_current_question(message, state, message.from_user.id)
 
 
@@ -209,39 +234,18 @@ async def cmd_reset(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(Command("prem"))
-async def cmd_prem(message: Message, state: FSMContext) -> None:
-    if not message.from_user:
-        return
-
-    user = await storage.get_user(message.from_user.id, message.from_user.username)
-    if user.get("paid"):
-        await message.answer("✅ У вас уже оформлен полный доступ ко всем вопросам!")
-        return
-
-    from handlers.interview import get_pay_inline_keyboard
-    await state.set_state(InterviewStates.waiting_payment)
-    await message.answer(
-        "💎 <b>Полный доступ к IT-собеседованию</b>\n\n"
-        "Открывает все 15 вопросов, детальную рецензию каждого ответа, "
-        "итоговую оценку Hard & Soft Skills и модуль генерации резюме (.docx).\n\n"
-        "Выберите удобный способ оплаты:",
-        reply_markup=get_pay_inline_keyboard(),
-        parse_mode="HTML",
-    )
-
-
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
     help_text = (
         "ℹ️ <b>Памятка по работе с ботом:</b>\n\n"
-        "• /continue — восстановить собеседование.\n"
-        "• /prem — оформить полный доступ ко всем 15 вопросам.\n"
-        "• /ref — получить реферальную ссылку (+150 бонусов за друга).\n"
+        "• /start — главное меню тренажёра.\n"
+        "• /continue — продолжить начатое собеседование.\n"
+        "• /pay — оплатить доступ, ввести промокод или списать бонусы.\n"
+        "• /ref — реферальная программа (+150 бонусов за друга).\n"
         "• /reviews — отзывы участников.\n"
-        "• /reset — сбросить текущие ответы и начать заново.\n"
+        "• /reset — сбросить ответы и выбрать другое направление.\n"
         "• /support — техподдержка.\n\n"
-        "💡 <i>Отвечайте подробно, описывайте архитектуру и стек. Кнопки подсказок находятся прямо под вопросом!</i>"
+        "💡 <i>В левом нижнем углу экрана всегда доступна кнопка Menu со всеми командами!</i>"
     )
     await message.answer(help_text, parse_mode="HTML")
 
@@ -257,11 +261,12 @@ async def cmd_support(message: Message, state: FSMContext) -> None:
         "✍️ <b>Служба поддержки</b>\n\n"
         "Опишите ваш вопрос или проблему одним сообщением.\n"
         "Мы сразу передадим его администраторам бота.",
+        reply_markup=get_support_cancel_keyboard(),
         parse_mode="HTML",
     )
 
 
-@router.message(SupportStates.waiting_support_message)
+@router.message(SupportStates.waiting_support_message, F.text)
 async def process_support_message(message: Message, state: FSMContext, bot: Bot) -> None:
     if not message.from_user or not message.text:
         await message.answer("Пожалуйста, отправьте текстовое сообщение с описанием проблемы.")
@@ -294,8 +299,8 @@ async def process_support_message(message: Message, state: FSMContext, bot: Bot)
 
     reply_kb = InlineKeyboardMarkup(inline_keyboard=inline_buttons)
 
-    from handlers.admin import AUTHENTICATED_ADMINS
-    target_admins = set(ADMIN_IDS).union(AUTHENTICATED_ADMINS)
+    from handlers.admin import get_active_admin_ids
+    target_admins = await get_active_admin_ids()
 
     for admin_id in target_admins:
         try:
@@ -352,7 +357,7 @@ async def cb_track_selected(callback: CallbackQuery, state: FSMContext) -> None:
         "• На каждый ваш ответ ментор даёт <b>разбор</b> сильных и слабых сторон.\n"
         "• В финале формируется <b>комплексный Word-отчёт (.docx)</b>.\n\n"
         "💡 <b>Главное правило:</b>\n"
-        "Отвечайте <b>максимально развёрнуто</b>. Односложные ответы ('да', 'знаю') не позволят оценить ваш грейд!"
+        "Отвечайте <b>максимально развёрнуто</b>. Односложные ответы не позволят оценить ваш грейд!"
     )
     if callback.message:
         await callback.message.edit_text(rules_text, reply_markup=get_ready_keyboard(), parse_mode="HTML")
@@ -368,46 +373,6 @@ async def cb_first_question(callback: CallbackQuery, state: FSMContext) -> None:
             pass
     await callback.answer()
     await ask_current_question(callback.message, state, callback.from_user.id)
-
-
-# -------------------------------------------------------------
-# ТЕСТОВЫЕ РЕЖИМЫ (/test, /testpay)
-# -------------------------------------------------------------
-
-@router.message(Command("test"))
-async def cmd_test_mode(message: Message, state: FSMContext) -> None:
-    if not message.from_user:
-        return
-    await storage.mark_paid(message.from_user.id)
-    user = await storage.get_user(message.from_user.id)
-    current_state = await state.get_state()
-
-    await message.answer("🧪 <b>Тестовый режим включён!</b> Ограничения по оплате сняты.", parse_mode="HTML")
-    if current_state == InterviewStates.waiting_payment:
-        await state.set_state(InterviewStates.waiting_answer)
-        await ask_current_question(message, state, message.from_user.id)
-    elif not user.get("track"):
-        await state.set_state(InterviewStates.selecting_track)
-        await message.answer("Выберите направление:", reply_markup=get_tracks_keyboard(), parse_mode="HTML")
-
-
-@router.message(Command("testpay"))
-async def cmd_testpay(message: Message, state: FSMContext) -> None:
-    if not message.from_user:
-        return
-    await storage.revoke_paid(message.from_user.id)
-    user = await storage.get_user(message.from_user.id)
-    user["paid"] = False
-    user["current_question_index"] = FREE_QUESTIONS_COUNT
-    await storage.save_user(message.from_user.id, user)
-
-    from handlers.interview import get_pay_inline_keyboard
-    await state.set_state(InterviewStates.waiting_payment)
-    await message.answer(
-        "🧪 <b>Тест оплаты активирован!</b>\nПроверьте выставление счёта по кнопкам ниже 👇",
-        reply_markup=get_pay_inline_keyboard(),
-        parse_mode="HTML",
-    )
 
 
 # -------------------------------------------------------------
@@ -484,11 +449,7 @@ async def process_unhandled_text(message: Message, state: FSMContext) -> None:
         return
 
     await message.answer(
-        "❓ <b>Команда не распознана.</b>\n\n"
-        "• /continue — продолжить собеседование\n"
-        "• /ref — реферальная программа\n"
-        "• /reviews — отзывы участников\n"
-        "• /start — главное меню\n"
-        "• /support — техподдержка",
+        "❓ <b>Команда не распознана.</b>\nВоспользуйтесь кнопкой <b>Menu</b> в левом нижнем углу или кнопками ниже:",
+        reply_markup=get_welcome_inline_keyboard(),
         parse_mode="HTML",
     )

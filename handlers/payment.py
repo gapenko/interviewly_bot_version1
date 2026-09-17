@@ -1,5 +1,5 @@
 """
-handlers/payment.py — приём платежей, применение промокодов и списание реферальных бонусов.
+handlers/payment.py — приём платежей, промокоды и списание бонусов с кнопками отмены.
 """
 import logging
 from aiogram import F, Router
@@ -16,7 +16,7 @@ from aiogram.types import (
 
 import config
 import storage
-from keyboards import get_dynamic_paywall_keyboard
+from keyboards import get_cancel_promo_keyboard, get_dynamic_paywall_keyboard
 from states import InterviewStates, PaymentStates
 import yookassa_service
 
@@ -28,22 +28,18 @@ BASE_STARS_PRICE = getattr(config, "ACCESS_PRICE_STARS", getattr(config, "STARS_
 
 
 async def calculate_prices(user_id: int, state: FSMContext) -> dict:
-    """Вычисляет итоговую стоимость в рублях и Stars с учётом бонусов и промокода."""
     data = await state.get_data()
     user = await storage.get_user(user_id)
 
-    promo_discount = data.get("promo_discount", 0)  # Скидка в %
+    promo_discount = data.get("promo_discount", 0)
     apply_bonuses = data.get("apply_bonuses", False)
     user_bonuses = user.get("bonus_balance", 0)
 
-    # 1. Применяем процентную скидку от промокода
     rub_after_promo = int(BASE_RUB_PRICE * (100 - promo_discount) / 100)
     stars_after_promo = int(BASE_STARS_PRICE * (100 - promo_discount) / 100)
 
-    # 2. Применяем списание бонусов (1 бонус = 1 рубль скидки, 4 бонуса = 1 Star)
     used_rub_bonuses = 0
     used_stars_bonuses = 0
-
     final_rub = rub_after_promo
     final_stars = stars_after_promo
 
@@ -69,7 +65,6 @@ async def calculate_prices(user_id: int, state: FSMContext) -> dict:
 
 
 async def render_paywall(target: Message | CallbackQuery, state: FSMContext, user_id: int, edit: bool = False):
-    """Отображает персонализированный счет на оплату."""
     calc = await calculate_prices(user_id, state)
 
     rub_price = calc["final_rub"]
@@ -110,10 +105,6 @@ async def render_paywall(target: Message | CallbackQuery, state: FSMContext, use
         await target.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
-# -------------------------------------------------------------
-# КОМАНДА /pay И КНОПКА ОПЛАТЫ
-# -------------------------------------------------------------
-
 @router.message(Command("pay"))
 async def cmd_pay(message: Message, state: FSMContext) -> None:
     if not message.from_user:
@@ -127,20 +118,26 @@ async def cmd_pay(message: Message, state: FSMContext) -> None:
     await render_paywall(message, state, message.from_user.id)
 
 
-# -------------------------------------------------------------
-# ВВОД И ПРИМЕНЕНИЕ ПРОМОКОДА
-# -------------------------------------------------------------
+# --- ВВОД ПРОМОКОДА И КНОПКА ОТМЕНЫ ---
 
 @router.callback_query(F.data == "pay_enter_promocode")
 async def cb_enter_promo_start(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(PaymentStates.waiting_promocode)
-    await callback.message.answer(
+    await callback.message.edit_text(
         "🎟 <b>Активация промокода</b>\n\n"
-        "Отправьте кодовое слово промокода в ответном сообщении.\n"
-        "Для отмены отправьте /cancel",
+        "Отправьте кодовое слово промокода ответным сообщением в чат.\n\n"
+        "<i>Если хотите вернуться назад, нажмите кнопку ниже:</i>",
+        reply_markup=get_cancel_promo_keyboard(),
         parse_mode="HTML",
     )
+
+
+@router.callback_query(F.data == "cancel_promocode_input")
+async def cb_cancel_promo(callback: CallbackQuery, state: FSMContext):
+    await callback.answer("Ввод промокода отменён")
+    await state.set_state(InterviewStates.waiting_payment)
+    await render_paywall(callback, state, callback.from_user.id, edit=True)
 
 
 @router.message(PaymentStates.waiting_promocode, F.text)
@@ -151,12 +148,12 @@ async def process_promocode_input(message: Message, state: FSMContext):
     if not promo:
         await message.answer(
             "❌ <b>Промокод не найден или срок его действия истёк.</b>\n"
-            "Проверьте правильность ввода или введите другой код:",
+            "Попробуйте ввести другой или вернитесь к оплате:",
+            reply_markup=get_cancel_promo_keyboard(),
             parse_mode="HTML",
         )
         return
 
-    # Сохраняем скидку в состояние
     discount = promo["discount_percent"]
     await state.update_data(promo_code=code_text, promo_discount=discount)
     await state.set_state(InterviewStates.waiting_payment)
@@ -167,13 +164,10 @@ async def process_promocode_input(message: Message, state: FSMContext):
         parse_mode="HTML",
     )
 
-    # Заново выводим экран оплаты с пересчитанной ценой
     await render_paywall(message, state, message.from_user.id)
 
 
-# -------------------------------------------------------------
-# СПИСАНИЕ БОНУСОВ
-# -------------------------------------------------------------
+# --- СПИСАНИЕ БОНУСОВ ---
 
 @router.callback_query(F.data == "pay_apply_bonuses")
 async def cb_apply_bonuses(callback: CallbackQuery, state: FSMContext):
@@ -182,9 +176,7 @@ async def cb_apply_bonuses(callback: CallbackQuery, state: FSMContext):
     await render_paywall(callback, state, callback.from_user.id, edit=True)
 
 
-# -------------------------------------------------------------
-# БЕСПЛАТНАЯ АКТИВАЦИЯ (100% СКИДКА)
-# -------------------------------------------------------------
+# --- БЕСПЛАТНЫЙ ДОСТУП ---
 
 @router.callback_query(F.data == "pay_free_unlock")
 async def cb_free_unlock(callback: CallbackQuery, state: FSMContext):
@@ -192,7 +184,6 @@ async def cb_free_unlock(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     calc = await calculate_prices(user_id, state)
 
-    # Списываем потраченные бонусы, если они применялись
     if calc["apply_bonuses"] and calc["used_rub_bonuses"] > 0:
         await storage.adjust_user_bonuses(user_id, -calc["used_rub_bonuses"])
 
@@ -201,7 +192,7 @@ async def cb_free_unlock(callback: CallbackQuery, state: FSMContext):
 
     await callback.message.answer(
         "🎉 <b>Поздравляем! Полный доступ успешно разблокирован!</b>\n\n"
-        "Скидка 100% успешно применена. Продолжаем техническое собеседование!",
+        "Скидка 100% применена. Продолжаем собеседование!",
         parse_mode="HTML",
     )
 
@@ -210,9 +201,7 @@ async def cb_free_unlock(callback: CallbackQuery, state: FSMContext):
         await ask_current_question(callback.message, state, user_id)
 
 
-# -------------------------------------------------------------
-# ОПЛАТА ЧЕРЕЗ ЮKASSA (СБП) ПО ПЕРЕСЧИТАННОЙ ЦЕНЕ
-# -------------------------------------------------------------
+# --- ЮKASSA ---
 
 @router.callback_query(F.data == "pay_yookassa")
 async def cb_pay_yookassa(callback: CallbackQuery, state: FSMContext) -> None:
@@ -225,7 +214,6 @@ async def cb_pay_yookassa(callback: CallbackQuery, state: FSMContext) -> None:
     if callback.message:
         wait_msg = await callback.message.answer("⏳ <i>Формирую ссылку на оплату...</i>", parse_mode="HTML")
 
-    # Передаем динамическую сумму
     url, payment_id = await yookassa_service.create_yookassa_payment(user_id, username, amount=rub_price)
 
     if wait_msg:
@@ -247,6 +235,7 @@ async def cb_pay_yookassa(callback: CallbackQuery, state: FSMContext) -> None:
         inline_keyboard=[
             [InlineKeyboardButton(text="💳 Перейти к оплате (СБП / Карта)", url=url)],
             [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"check_yk:{payment_id}")],
+            [InlineKeyboardButton(text="◀️ Назад к выбору оплаты", callback_data="nav_back_to_paywall")],
         ]
     )
 
@@ -255,11 +244,17 @@ async def cb_pay_yookassa(callback: CallbackQuery, state: FSMContext) -> None:
             f"🧾 <b>Счёт на оплату:</b>\n\n"
             f"• <b>К оплате:</b> {rub_price} ₽\n"
             f"• <b>Способ:</b> СБП (QR-код) или банковская карта\n\n"
-            "После завершения платежа нажмите <b>«Проверить оплату»</b>.",
+            "После оплаты нажмите <b>«Проверить оплату»</b>.",
             reply_markup=kb,
             parse_mode="HTML",
         )
     await callback.answer()
+
+
+@router.callback_query(F.data == "nav_back_to_paywall")
+async def cb_back_to_paywall(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await render_paywall(callback, state, callback.from_user.id, edit=True)
 
 
 @router.callback_query(F.data.startswith("check_yk:"))
@@ -275,7 +270,6 @@ async def cb_check_yk(callback: CallbackQuery, state: FSMContext) -> None:
     username = callback.from_user.username
     calc = await calculate_prices(user_id, state)
 
-    # Списываем бонусы, если использовались
     if calc["apply_bonuses"] and calc["used_rub_bonuses"] > 0:
         await storage.adjust_user_bonuses(user_id, -calc["used_rub_bonuses"])
 
@@ -305,9 +299,7 @@ async def cb_check_yk(callback: CallbackQuery, state: FSMContext) -> None:
         await ask_current_question(callback.message, state, user_id)
 
 
-# -------------------------------------------------------------
-# TELEGRAM STARS ПО ПЕРЕСЧИТАННОЙ ЦЕНЕ
-# -------------------------------------------------------------
+# --- TELEGRAM STARS ---
 
 @router.callback_query(F.data == "pay_stars_invoice")
 async def cb_pay_stars(callback: CallbackQuery, state: FSMContext) -> None:
@@ -319,7 +311,7 @@ async def cb_pay_stars(callback: CallbackQuery, state: FSMContext) -> None:
         prices = [LabeledPrice(label="Полный доступ к IT-собеседованию", amount=stars_price)]
         await callback.message.answer_invoice(
             title="Полный доступ к собеседованию",
-            description=f"Доступ ко всем 15 вопросам и отчёту резюме со скидкой. К оплате: {stars_price} Stars.",
+            description=f"Доступ ко всем 15 вопросам и резюме со скидкой. К оплате: {stars_price} Stars.",
             payload="full_interview_access_stars",
             currency="XTR",
             prices=prices,
