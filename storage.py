@@ -1,5 +1,6 @@
 """
 storage.py — работа с JSON-файлами пользователей, платежей, отзывов и UTM-кампаний.
+Все файлы строго хранятся в директории data/.
 """
 import asyncio
 import json
@@ -9,6 +10,7 @@ from typing import Any, Optional
 
 from config import PAYMENTS_LOG_FILE, USERS_DATA_FILE
 
+# Строгая привязка путей к директории data/
 REVIEWS_DATA_FILE = "data/reviews.json"
 CAMPAIGNS_DATA_FILE = "data/campaigns.json"
 
@@ -71,7 +73,7 @@ async def register_user_with_ref(
     referrer_id: int | None = None,
     campaign_tag: str | None = None,
 ) -> tuple[dict, bool]:
-    """Регистрирует нового пользователя. Если есть реферер — начисляет ему +150 бонусов."""
+    """Регистрирует нового пользователя. Если есть реферер — начисляет +150 бонусов."""
     async with _file_lock:
         users = _read_json(USERS_DATA_FILE, {})
         key = str(telegram_id)
@@ -83,7 +85,7 @@ async def register_user_with_ref(
                 referrer_id=referrer_id,
                 campaign=campaign_tag,
             )
-            # Бонус рефереру
+            # Начисление бонусов рефереру
             if referrer_id and str(referrer_id) in users and str(referrer_id) != key:
                 ref_user = users[str(referrer_id)]
                 ref_user["bonus_balance"] = ref_user.get("bonus_balance", 0) + 150
@@ -111,7 +113,7 @@ async def save_user(telegram_id: int, user_data: dict) -> None:
 
 
 async def reset_user(telegram_id: int) -> None:
-    """Сбрасывает прогресс ответов, но сохраняет факт оплаты, баланс бонусов и username."""
+    """Сбрасывает прогресс ответов, сохраняя оплату, бонусы и username."""
     async with _file_lock:
         users = _read_json(USERS_DATA_FILE, {})
         key = str(telegram_id)
@@ -139,8 +141,7 @@ async def mark_paid(telegram_id: int) -> None:
         if key not in users:
             users[key] = _default_user_record(None)
         users[key]["paid"] = True
-        
-        # Фиксация конверсии в оплату для UTM-кампании
+
         campaign_tag = users[key].get("campaign")
         if campaign_tag:
             campaigns = _read_json(CAMPAIGNS_DATA_FILE, {})
@@ -198,7 +199,7 @@ async def log_payment(
         _write_json(PAYMENTS_LOG_FILE, payments)
 
 
-# --- ОТЗЫВЫ ---
+# --- СИСТЕМА ОТЗЫВОВ ---
 
 async def add_review(user_id: int, username: str | None, full_name: str, rating: int, text: str) -> int:
     async with _file_lock:
@@ -236,7 +237,14 @@ async def get_approved_reviews() -> list[dict]:
         return [r for r in reviews if r.get("approved")]
 
 
-# --- UTM / РЕКЛАМНЫЕ ССЫЛКИ ДЛЯ КАНАЛОВ ---
+async def get_pending_reviews() -> list[dict]:
+    """Возвращает список отзывов, ожидающих модерации."""
+    async with _file_lock:
+        reviews = _read_json(REVIEWS_DATA_FILE, [])
+        return [r for r in reviews if not r.get("approved", False)]
+
+
+# --- РЕКЛАМНЫЕ ССЫЛКИ ДЛЯ КАНАЛОВ (UTM) ---
 
 async def create_campaign(tag: str, description: str = "") -> None:
     async with _file_lock:

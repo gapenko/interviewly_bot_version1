@@ -1,6 +1,6 @@
 """
 keyboards.py — все инлайн-клавиатуры приложения.
-Нижние Reply-кнопки полностью удалены для чистого ввода текста.
+Нижние Reply-кнопки полностью исключены.
 """
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 import config
@@ -13,18 +13,12 @@ SBP_PRICE_RUB = getattr(
     config, "SBP_PRICE_RUB", getattr(config, "PRICE_RUB", getattr(config, "PAYMENT_AMOUNT", 100))
 )
 
-# Очистка нижних кнопок при входе
 remove_reply_kb = ReplyKeyboardRemove()
 
 
-# --- ИНТЕРВЬЮ: ТУЛБАР ПОД КАРТОЧКОЙ ВОПРОСА ---
+# --- ИНТЕРВЬЮ: КАРТОЧКА ВОПРОСА ---
 
 def get_interview_toolbar() -> InlineKeyboardMarkup:
-    """
-    Инлайн-кнопки управления под карточкой вопроса.
-    Названия полные, без сокращений, в 2 ряда.
-    Кнопка 'Продолжить' убрана.
-    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -40,7 +34,6 @@ def get_interview_toolbar() -> InlineKeyboardMarkup:
 
 
 def get_reset_confirm_keyboard() -> InlineKeyboardMarkup:
-    """Подтверждение сброса прогресса."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -105,6 +98,17 @@ def get_finished_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def get_resume_menu_keyboard() -> InlineKeyboardMarkup:
+    """Меню резюме для handlers/resume.py."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📄 Черновик резюме", callback_data="resume_draft")],
+            [InlineKeyboardButton(text="🔍 Аудит текущего резюме", callback_data="resume_audit")],
+            [InlineKeyboardButton(text="📥 Скачать .docx", callback_data="resume_download")],
+        ]
+    )
+
+
 # --- ОТЗЫВЫ ---
 
 def get_stars_rating_kb() -> InlineKeyboardMarkup:
@@ -141,17 +145,18 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="📊 Общая статистика", callback_data="admin_stats"),
+                InlineKeyboardButton(text="⭐️ Отзывы на модерации", callback_data="admin_pending_reviews"),
+            ],
+            [
                 InlineKeyboardButton(text="🔗 UTM-ссылки каналов", callback_data="admin_campaigns"),
-            ],
-            [
                 InlineKeyboardButton(text="⭐️ Баланс Stars", callback_data="admin_stars"),
+            ],
+            [
                 InlineKeyboardButton(text="📢 Создать рассылку", callback_data="admin_broadcast"),
-            ],
-            [
                 InlineKeyboardButton(text="➕ Создать рекламную ссылку", callback_data="admin_create_camp"),
-                InlineKeyboardButton(text="💾 Выгрузить базы (JSON)", callback_data="admin_export_db"),
             ],
             [
+                InlineKeyboardButton(text="💾 Выгрузить базы (JSON)", callback_data="admin_export_db"),
                 InlineKeyboardButton(text="❌ Закрыть панель", callback_data="admin_close"),
             ],
         ]

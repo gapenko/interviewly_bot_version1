@@ -2,12 +2,17 @@
 handlers/reviews.py — система отзывов участников и премодерация для администраторов.
 """
 import logging
-from aiogram import F, Router, types
+from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
-from config import ADMIN_IDS
+import config
 from keyboards import get_admin_review_kb, get_stars_rating_kb
 from states import ReviewStates
 from storage import add_review, get_approved_reviews, set_review_status
@@ -18,8 +23,8 @@ router = Router(name="reviews")
 
 @router.message(Command("reviews"))
 @router.callback_query(F.data == "btn_reviews_show")
-async def cmd_reviews(event: types.Message | types.CallbackQuery):
-    is_cb = isinstance(event, types.CallbackQuery)
+async def cmd_reviews(event: Message | CallbackQuery):
+    is_cb = isinstance(event, CallbackQuery)
     msg = event.message if is_cb else event
     if is_cb:
         await event.answer()
@@ -29,7 +34,7 @@ async def cmd_reviews(event: types.Message | types.CallbackQuery):
         text = "⭐️ <b>Пока отзывов нет. Вы можете оставить первый отзыв после собеседования!</b>"
     else:
         text = "⭐️ <b>Отзывы участников о тренажёре:</b>\n\n"
-        for r in approved[-5:]:
+        for r in approved[-10:]:
             stars = "⭐️" * int(r.get("rating", 5))
             text += f"👤 <b>{r['full_name']}</b> ({stars})\n<i>«{r['text']}»</i>\n📅 <code>{r.get('created_at', '')}</code>\n\n"
 
@@ -45,7 +50,7 @@ async def cmd_reviews(event: types.Message | types.CallbackQuery):
 
 
 @router.callback_query(F.data == "review_start_fsm")
-async def cb_start_review(callback: types.CallbackQuery, state: FSMContext):
+async def cb_start_review(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await callback.message.answer(
         "⭐️ <b>Оцените качество и пользу AI-собеседования:</b>",
@@ -56,7 +61,7 @@ async def cb_start_review(callback: types.CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(ReviewStates.waiting_rating, F.data.startswith("rate_star_"))
-async def cb_select_stars(callback: types.CallbackQuery, state: FSMContext):
+async def cb_select_stars(callback: CallbackQuery, state: FSMContext):
     rating = int(callback.data.replace("rate_star_", ""))
     await state.update_data(rating=rating)
     await callback.answer()
@@ -69,7 +74,7 @@ async def cb_select_stars(callback: types.CallbackQuery, state: FSMContext):
 
 
 @router.message(ReviewStates.waiting_text, F.text)
-async def handle_review_text(message: types.Message, state: FSMContext):
+async def handle_review_text(message: Message, state: FSMContext):
     data = await state.get_data()
     rating = data.get("rating", 5)
     text = message.text.strip()
@@ -82,19 +87,23 @@ async def handle_review_text(message: types.Message, state: FSMContext):
         text=text,
     )
     await state.clear()
-    await message.answer("✅ <b>Спасибо за обратную связь!</b>\nВаш отзыв отправлен на модерацию и скоро появится в общем списке.", parse_mode="HTML")
+    await message.answer(
+        "✅ <b>Спасибо за обратную связь!</b>\nВаш отзыв отправлен на модерацию и скоро появится в общем списке.",
+        parse_mode="HTML",
+    )
 
-    # Уведомление администраторам для модерации в 1 клик
+    # Уведомление администраторам
     stars_str = "⭐️" * rating
     adm_alert = (
-        f"📬 <b>НОВЫЙ ОТЗЫВ #{rev_id}</b>\n\n"
+        f"📬 <b>НОВЫЙ ОТЗЫВ #{rev_id} НА МОДЕРАЦИЮ</b>\n\n"
         f"👤 <b>От:</b> {message.from_user.full_name} (@{message.from_user.username or 'отсутствует'})\n"
         f"🆔 <code>{message.from_user.id}</code>\n"
         f"⭐️ <b>Оценка:</b> {stars_str}\n\n"
         f"💬 <b>Текст:</b>\n{text}"
     )
 
-    for admin_id in ADMIN_IDS:
+    admin_ids = getattr(config, "ADMIN_IDS", [])
+    for admin_id in admin_ids:
         try:
             await message.bot.send_message(
                 admin_id,
@@ -107,16 +116,16 @@ async def handle_review_text(message: types.Message, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("adm_rev_ok:"))
-async def cb_approve_rev(callback: types.CallbackQuery):
+async def cb_approve_rev(callback: CallbackQuery):
     rev_id = int(callback.data.replace("adm_rev_ok:", ""))
     await set_review_status(rev_id, True)
     await callback.answer("Отзыв одобрен и опубликован")
     await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.reply(f"✅ Отзыв #{rev_id} опубликован для всех пользователей.")
+    await callback.message.reply(f"✅ Отзыв #{rev_id} успешно опубликован в общем списке!")
 
 
 @router.callback_query(F.data.startswith("adm_rev_no:"))
-async def cb_reject_rev(callback: types.CallbackQuery):
+async def cb_reject_rev(callback: CallbackQuery):
     rev_id = int(callback.data.replace("adm_rev_no:", ""))
     await set_review_status(rev_id, False)
     await callback.answer("Отзыв отклонён")

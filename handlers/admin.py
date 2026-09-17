@@ -1,8 +1,9 @@
 """
 handlers/admin.py — расширенная админ-панель:
 - Общая статистика, баланс Telegram Stars.
+- Просмотр и модерация отзывов прямо из бота.
 - UTM-генератор ссылок для Telegram-каналов с аналитикой переходов и конверсий.
-- Рассылка, ответы техподдержки прямо из бота и выгрузка баз (JSON).
+- Рассылка, ответы техподдержки и выгрузка баз (JSON).
 """
 import asyncio
 import json
@@ -26,9 +27,14 @@ from config import (
     PAYMENTS_LOG_FILE,
     USERS_DATA_FILE,
 )
-from keyboards import get_admin_keyboard
+from keyboards import get_admin_keyboard, get_admin_review_kb
 from states import AdminStates
-from storage import create_campaign, get_all_campaigns
+from storage import (
+    create_campaign,
+    get_all_campaigns,
+    get_pending_reviews,
+    set_review_status,
+)
 
 REVIEWS_DATA_FILE = "data/reviews.json"
 CAMPAIGNS_DATA_FILE = "data/campaigns.json"
@@ -104,6 +110,38 @@ async def cb_admin_close(callback: CallbackQuery) -> None:
     if callback.message:
         await callback.message.delete()
     await callback.answer("Панель закрыта.")
+
+
+# --- МОДЕРАЦИЯ ОТЗЫВОВ ИЗ АДМИНКИ ---
+
+@router.callback_query(F.data == "admin_pending_reviews", IsAdmin())
+async def cb_admin_pending_reviews(callback: CallbackQuery):
+    if not callback.message:
+        return
+    await callback.answer()
+
+    pending = await get_pending_reviews()
+    if not pending:
+        await callback.message.answer("✅ <b>Нет отзывов, ожидающих модерации.</b> Все отзывы проверены.", parse_mode="HTML")
+        return
+
+    await callback.message.answer(f"📋 <b>Ожидают модерации ({len(pending)} шт.):</b>", parse_mode="HTML")
+
+    for r in pending:
+        stars_str = "⭐️" * int(r.get("rating", 5))
+        card = (
+            f"📬 <b>Отзыв #{r['id']}</b>\n"
+            f"👤 <b>Автор:</b> {r.get('full_name')} (@{r.get('username') or 'нет'})\n"
+            f"🆔 <code>{r.get('user_id')}</code>\n"
+            f"⭐️ <b>Оценка:</b> {stars_str}\n"
+            f"📅 <code>{r.get('created_at')}</code>\n\n"
+            f"💬 <b>Текст:</b>\n{r.get('text')}"
+        )
+        await callback.message.answer(
+            card,
+            reply_markup=get_admin_review_kb(r["id"]),
+            parse_mode="HTML",
+        )
 
 
 # --- СТАТИСТИКА И БАЛАНС STARS ---
