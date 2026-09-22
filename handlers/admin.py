@@ -28,6 +28,7 @@ from keyboards import (
     get_admin_review_kb,
     get_user_manage_kb,
 )
+from questions import TRACKS
 from states import AdminStates
 from storage import (
     add_admin_permanently,
@@ -257,8 +258,16 @@ async def process_user_search(message: Message, state: FSMContext):
         return
 
     uid, data = result
-    access_status = "👑 Полный доступ" if data.get("paid") else "🔒 Бесплатный лимит"
+    access_status = "👑 Полный доступ ко всем направлениям" if data.get("paid") else "🔒 Стандартный доступ"
     answers_count = len(data.get("answers", []))
+
+    paid_tracks = data.get("paid_tracks", [])
+    if data.get("paid"):
+        paid_tracks_str = "все (полный доступ)"
+    elif paid_tracks:
+        paid_tracks_str = ", ".join(TRACKS.get(t, t) for t in paid_tracks)
+    else:
+        paid_tracks_str = "нет оплаченных направлений"
 
     info = (
         f"👤 <b>Карточка кандидата</b>\n\n"
@@ -266,7 +275,8 @@ async def process_user_search(message: Message, state: FSMContext):
         f"├ <b>Username:</b> @{data.get('username') or 'нет'}\n"
         f"├ <b>ID:</b> <code>{uid}</code>\n"
         f"├ <b>Статус:</b> <b>{access_status}</b>\n"
-        f"├ <b>Направление:</b> <code>{data.get('track') or 'Не выбрано'}</code>\n"
+        f"├ <b>Оплаченные направления:</b> {paid_tracks_str}\n"
+        f"├ <b>Текущее направление:</b> <code>{data.get('track') or 'Не выбрано'}</code>\n"
         f"├ <b>Вопрос:</b> {data.get('current_question_index', 0)} / 15 (ответов: {answers_count})\n"
         f"├ <b>Бонусы:</b> <b>{data.get('bonus_balance', 0)}</b> (рефералов: {data.get('referrals_count', 0)})\n"
         f"├ <b>Канал входа:</b> <code>{data.get('campaign') or 'Органический'}</code>\n"
@@ -281,7 +291,7 @@ async def cb_user_grant(callback: CallbackQuery):
     uid = int(callback.data.split(":")[1])
     await set_user_paid_status(uid, True)
     await callback.answer("Доступ выдан!")
-    await callback.message.reply(f"👑 Пользователю <code>{uid}</code> успешно открыт полный доступ!", parse_mode="HTML")
+    await callback.message.reply(f"👑 Пользователю <code>{uid}</code> выдан полный доступ ко всем направлениям!", parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("adm_u_revoke:"), IsAdmin())
@@ -289,7 +299,7 @@ async def cb_user_revoke(callback: CallbackQuery):
     uid = int(callback.data.split(":")[1])
     await set_user_paid_status(uid, False)
     await callback.answer("Доступ отозван")
-    await callback.message.reply(f"🔒 Доступ у пользователя <code>{uid}</code> заблокирован.", parse_mode="HTML")
+    await callback.message.reply(f"🔒 Полный доступ у пользователя <code>{uid}</code> отозван (ранее оплаченные направления сохранены).", parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("adm_u_addb:"), IsAdmin())
@@ -307,7 +317,7 @@ async def cb_user_reset(callback: CallbackQuery):
     uid = int(callback.data.split(":")[1])
     await reset_user(uid)
     await callback.answer("Прогресс сброшен")
-    await callback.message.reply(f"🔄 Прогресс интервью пользователя <code>{uid}</code> сброшен.", parse_mode="HTML")
+    await callback.message.reply(f"🔄 Прогресс интервью пользователя <code>{uid}</code> сброшен (оплаченные направления сохранены).", parse_mode="HTML")
 
 
 # =========================================================
@@ -328,7 +338,10 @@ async def cb_admin_stats(callback: CallbackQuery, bot: Bot) -> None:
                 data = json.load(f)
                 if isinstance(data, dict):
                     users_count = len(data)
-                    paid_users_count = sum(1 for u in data.values() if isinstance(u, dict) and u.get("paid"))
+                    paid_users_count = sum(
+                        1 for u in data.values()
+                        if isinstance(u, dict) and (u.get("paid") or u.get("paid_tracks"))
+                    )
         except Exception as e:
             logger.error("Ошибка чтения USERS: %s", e)
 
@@ -362,7 +375,7 @@ async def cb_admin_stats(callback: CallbackQuery, bot: Bot) -> None:
     text = (
         "📊 <b>Финансовая и продуктовая аналитика</b>\n\n"
         f"👥 Всего кандидатов: <b>{users_count}</b>\n"
-        f"👑 Платящих пользователей: <b>{paid_users_count}</b>\n"
+        f"👑 Оплативших хотя бы одно направление: <b>{paid_users_count}</b>\n"
         f"📈 Конверсия в оплату: <b>{conversion:.1f}%</b>\n\n"
         f"💳 Всего успешных транзакций: <b>{payments_count}</b>\n"
         f"💰 Выручка ЮKassa (СБП): <b>{logged_rub} ₽</b>\n"
@@ -518,16 +531,21 @@ async def cb_admin_team_hub(callback: CallbackQuery):
     await callback.answer()
 
     admins = await get_active_admin_ids()
+    saved_admins = set(await get_saved_admins())
     text = "👥 <b>Список постоянных администраторов бота:</b>\n\n"
+    if not admins:
+        text += "<i>Список пуст.</i>\n"
     for aid in admins:
-        text += f"• ID: <code>{aid}</code>\n"
+        source = "" if aid in saved_admins else " (задан в .env, снять можно только там)"
+        text += f"• ID: <code>{aid}</code>{source}\n"
 
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Назначить админа", callback_data="admin_add_team_member")],
-            [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="admin_menu")],
-        ]
-    )
+    rows = [
+        [InlineKeyboardButton(text=f"🗑 Снять {aid}", callback_data=f"adm_team_remove:{aid}")]
+        for aid in saved_admins
+    ]
+    rows.append([InlineKeyboardButton(text="➕ Назначить админа", callback_data="admin_add_team_member")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="admin_menu")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 
@@ -661,3 +679,21 @@ async def process_support_reply(message: Message, state: FSMContext, bot: Bot) -
     except Exception as e:
         await message.answer(f"❌ Не удалось доставить сообщение: <code>{e}</code>", parse_mode="HTML")
     await state.clear()
+
+
+# =========================================================
+# 7. УДАЛЕНИЕ АДМИНИСТРАТОРА
+#
+# Раньше storage.remove_admin_permanently импортировалась, но нигде не вызывалась —
+# убрать администратора можно было только вручную правкой data/admins.json.
+# =========================================================
+
+@router.callback_query(F.data.startswith("adm_team_remove:"), IsAdmin())
+async def cb_remove_admin_confirmed(callback: CallbackQuery) -> None:
+    target_id = int(callback.data.replace("adm_team_remove:", ""))
+    removed = await remove_admin_permanently(target_id)
+    if removed:
+        await callback.answer("Администратор удалён")
+        await callback.message.reply(f"🗑 Пользователь <code>{target_id}</code> больше не администратор.", parse_mode="HTML")
+    else:
+        await callback.answer("Этот ID не найден в списке администраторов (возможно, он задан через ADMIN_IDS в .env).", show_alert=True)

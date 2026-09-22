@@ -1,5 +1,10 @@
 """
 handlers/payment.py — приём платежей, промокоды и списание бонусов с кнопками отмены.
+
+Оплата открывает доступ ТОЛЬКО к тому направлению, которое выбрано у пользователя на момент
+оплаты (storage.grant_track_access). Если пользователь захочет пройти другое направление —
+для него нужно будет оплатить доступ заново, если только у пользователя нет полного
+безлимитного доступа (storage.set_user_paid_status / реферальная программа).
 """
 import logging
 from aiogram import F, Router
@@ -16,15 +21,16 @@ from aiogram.types import (
 
 import config
 import storage
-from keyboards import get_cancel_promo_keyboard, get_dynamic_paywall_keyboard
+from keyboards import get_cancel_promo_keyboard, get_dynamic_paywall_keyboard, get_tracks_keyboard
+from questions import TRACKS
 from states import InterviewStates, PaymentStates
 import yookassa_service
 
 logger = logging.getLogger(__name__)
 router = Router(name="payment")
 
-BASE_RUB_PRICE = getattr(config, "SBP_PRICE_RUB", 100)
-BASE_STARS_PRICE = getattr(config, "ACCESS_PRICE_STARS", getattr(config, "STARS_PRICE", 50))
+BASE_RUB_PRICE = config.SBP_PRICE_RUB
+BASE_STARS_PRICE = config.ACCESS_PRICE_STARS
 
 
 async def calculate_prices(user_id: int, state: FSMContext) -> dict:
@@ -66,6 +72,9 @@ async def calculate_prices(user_id: int, state: FSMContext) -> dict:
 
 async def render_paywall(target: Message | CallbackQuery, state: FSMContext, user_id: int, edit: bool = False):
     calc = await calculate_prices(user_id, state)
+    user = await storage.get_user(user_id)
+    track = user.get("track")
+    track_title = TRACKS.get(track, "выбранному направлению") if track else "выбранному направлению"
 
     rub_price = calc["final_rub"]
     stars_price = calc["final_stars"]
@@ -80,13 +89,14 @@ async def render_paywall(target: Message | CallbackQuery, state: FSMContext, use
     discount_text = "\n".join(discount_lines) + "\n" if discount_lines else ""
 
     text = (
-        "💎 <b>Оформление полного доступа к собеседованию</b>\n\n"
+        f"💎 <b>Оформление доступа к направлению «{track_title}»</b>\n\n"
         "Вам откроются все 15 глубоких вопросов, рецензии по каждому ответу, "
         "итоговая оценка компетенций и готовое резюме в формате Word (.docx).\n\n"
         f"{discount_text}"
         f"💰 <b>К оплате:</b> <b>{rub_price} ₽</b> или <b>{stars_price} ⭐️</b>\n"
         f"💼 Доступно бонусов на счёте: <b>{calc['user_bonuses']}</b>\n\n"
-        "<i>Используйте кнопки ниже для оплаты, ввода промокода или списания бонусов:</i>"
+        "<i>Используйте кнопки ниже для оплаты, ввода промокода или списания бонусов. "
+        "Оплата открывает доступ именно к этому направлению.</i>"
     )
 
     kb = get_dynamic_paywall_keyboard(
@@ -110,8 +120,20 @@ async def cmd_pay(message: Message, state: FSMContext) -> None:
     if not message.from_user:
         return
     user = await storage.get_user(message.from_user.id)
-    if user.get("paid"):
-        await message.answer("✅ У вас уже оформлен полный доступ ко всем вопросам!")
+    track = user.get("track")
+
+    if not track:
+        await state.set_state(InterviewStates.selecting_track)
+        await message.answer(
+            "Сначала выберите направление собеседования — оплата открывает доступ к конкретному направлению:",
+            reply_markup=get_tracks_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
+    if storage.user_has_track_access(user, track):
+        track_title = TRACKS.get(track, track)
+        await message.answer(f"✅ У вас уже оформлен полный доступ к направлению «{track_title}»!")
         return
 
     await state.set_state(InterviewStates.waiting_payment)
@@ -176,22 +198,25 @@ async def cb_apply_bonuses(callback: CallbackQuery, state: FSMContext):
     await render_paywall(callback, state, callback.from_user.id, edit=True)
 
 
-# --- БЕСПЛАТНЫЙ ДОСТУП ---
+# --- БЕСПЛАТНЫЙ ДОСТУП (100% скидка промокодом/бонусами) ---
 
 @router.callback_query(F.data == "pay_free_unlock")
 async def cb_free_unlock(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     user_id = callback.from_user.id
+    user = await storage.get_user(user_id)
+    track = user.get("track")
     calc = await calculate_prices(user_id, state)
 
     if calc["apply_bonuses"] and calc["used_rub_bonuses"] > 0:
         await storage.adjust_user_bonuses(user_id, -calc["used_rub_bonuses"])
 
-    await storage.mark_paid(user_id)
+    if track:
+        await storage.grant_track_access(user_id, track)
     await state.set_state(InterviewStates.waiting_answer)
 
     await callback.message.answer(
-        "🎉 <b>Поздравляем! Полный доступ успешно разблокирован!</b>\n\n"
+        "🎉 <b>Поздравляем! Полный доступ к этому направлению успешно разблокирован!</b>\n\n"
         "Скидка 100% применена. Продолжаем собеседование!",
         parse_mode="HTML",
     )
@@ -268,12 +293,15 @@ async def cb_check_yk(callback: CallbackQuery, state: FSMContext) -> None:
 
     user_id = callback.from_user.id
     username = callback.from_user.username
+    user = await storage.get_user(user_id)
+    track = user.get("track")
     calc = await calculate_prices(user_id, state)
 
     if calc["apply_bonuses"] and calc["used_rub_bonuses"] > 0:
         await storage.adjust_user_bonuses(user_id, -calc["used_rub_bonuses"])
 
-    await storage.mark_paid(user_id)
+    if track:
+        await storage.grant_track_access(user_id, track)
     await storage.log_payment(
         telegram_id=user_id,
         username=username,
@@ -288,7 +316,7 @@ async def cb_check_yk(callback: CallbackQuery, state: FSMContext) -> None:
     if callback.message:
         await callback.message.answer(
             "🎉 <b>Оплата прошла успешно!</b>\n\n"
-            "Вам открыт полный доступ ко всем 15 вопросам собеседования и модулю резюме.",
+            "Вам открыт полный доступ ко всем 15 вопросам этого направления и модулю резюме.",
             parse_mode="HTML",
         )
 
@@ -311,7 +339,7 @@ async def cb_pay_stars(callback: CallbackQuery, state: FSMContext) -> None:
         prices = [LabeledPrice(label="Полный доступ к IT-собеседованию", amount=stars_price)]
         await callback.message.answer_invoice(
             title="Полный доступ к собеседованию",
-            description=f"Доступ ко всем 15 вопросам и резюме со скидкой. К оплате: {stars_price} Stars.",
+            description=f"Доступ ко всем 15 вопросам этого направления и резюме со скидкой. К оплате: {stars_price} Stars.",
             payload="full_interview_access_stars",
             currency="XTR",
             prices=prices,
@@ -332,12 +360,15 @@ async def process_successful_payment(message: Message, state: FSMContext) -> Non
     payment = message.successful_payment
     user_id = message.from_user.id
     username = message.from_user.username
+    user = await storage.get_user(user_id)
+    track = user.get("track")
     calc = await calculate_prices(user_id, state)
 
     if calc["apply_bonuses"] and calc["used_rub_bonuses"] > 0:
         await storage.adjust_user_bonuses(user_id, -calc["used_rub_bonuses"])
 
-    await storage.mark_paid(user_id)
+    if track:
+        await storage.grant_track_access(user_id, track)
     await storage.log_payment(
         telegram_id=user_id,
         username=username,
@@ -350,7 +381,7 @@ async def process_successful_payment(message: Message, state: FSMContext) -> Non
 
     await message.answer(
         "🎉 <b>Оплата через Stars успешно завершена!</b>\n\n"
-        "Полный доступ открыт. Продолжаем подготовку!",
+        "Полный доступ к этому направлению открыт. Продолжаем подготовку!",
         parse_mode="HTML",
     )
 

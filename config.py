@@ -27,14 +27,21 @@ LLM_MODEL = os.getenv("LLM_MODEL", "claude-3-5-sonnet-20241022")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.speshu.ai/v1")
 
 # --- Настройки собеседования ---
-FREE_QUESTIONS_COUNT = int(os.getenv("FREE_QUESTIONS_COUNT", "2"))
+FREE_QUESTIONS_COUNT = int(os.getenv("FREE_QUESTIONS_COUNT", "4"))
 
 # --- Настройки платежей ---
-# Стоимость в Telegram Stars
-STARS_PRICE = int(os.getenv("STARS_PRICE", "50"))
+# ACCESS_PRICE_STARS — актуальное имя переменной для цены в Telegram Stars.
+# STARS_PRICE читается как алиас для обратной совместимости со старым .env.
+ACCESS_PRICE_STARS = int(os.getenv("ACCESS_PRICE_STARS", os.getenv("STARS_PRICE", "50")))
+STARS_PRICE = ACCESS_PRICE_STARS  # алиас, чтобы не ломать код, который ссылается на старое имя
 
 # Стоимость в рублях (СБП / ЮKassa)
 SBP_PRICE_RUB = int(os.getenv("SBP_PRICE_RUB", "100"))
+
+# --- Реферальная программа ---
+# Вынесено из кода в конфиг — раньше числа 150 и 600 были "зашиты" в нескольких местах storage.py и handlers/start.py.
+REFERRAL_BONUS_PER_INVITE = int(os.getenv("REFERRAL_BONUS_PER_INVITE", "150"))
+REFERRAL_FULL_ACCESS_THRESHOLD = int(os.getenv("REFERRAL_FULL_ACCESS_THRESHOLD", "600"))
 
 # ЮKassa API
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "")

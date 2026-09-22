@@ -5,12 +5,10 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeybo
 import config
 from questions import TRACKS
 
-ACCESS_PRICE_STARS = getattr(
-    config, "ACCESS_PRICE_STARS", getattr(config, "PRICE_STARS", getattr(config, "STARS_PRICE", 50))
-)
-SBP_PRICE_RUB = getattr(
-    config, "SBP_PRICE_RUB", getattr(config, "PRICE_RUB", getattr(config, "PAYMENT_AMOUNT", 100))
-)
+# Раньше здесь была цепочка из трёх getattr() на случай расхождения имён переменных
+# в config.py / .env. Теперь config.py гарантирует эти два имени, поэтому просто берём их напрямую.
+ACCESS_PRICE_STARS = config.ACCESS_PRICE_STARS
+SBP_PRICE_RUB = config.SBP_PRICE_RUB
 
 remove_reply_kb = ReplyKeyboardRemove()
 
@@ -214,9 +212,9 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
 
 def get_user_manage_kb(target_id: int, has_paid: bool) -> InlineKeyboardMarkup:
     paid_btn = (
-        InlineKeyboardButton(text="🔒 Забрать доступ", callback_data=f"adm_u_revoke:{target_id}")
+        InlineKeyboardButton(text="🔒 Забрать полный доступ", callback_data=f"adm_u_revoke:{target_id}")
         if has_paid
-        else InlineKeyboardButton(text="👑 Выдать доступ", callback_data=f"adm_u_grant:{target_id}")
+        else InlineKeyboardButton(text="👑 Выдать полный доступ (все направления)", callback_data=f"adm_u_grant:{target_id}")
     )
     return InlineKeyboardMarkup(
         inline_keyboard=[

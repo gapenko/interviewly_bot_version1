@@ -1,5 +1,10 @@
 """
 handlers/reviews.py — система отзывов с кнопками возврата и модерацией.
+
+Модерация отзывов (approve / reject / delete, callback_data="adm_rev_*") обрабатывается
+ТОЛЬКО в handlers/admin.py, за фильтром IsAdmin(). Раньше здесь была вторая, незащищённая
+копия тех же хэндлеров без какой-либо проверки прав — это дублирование убрано, чтобы модерация
+проверялась ровно в одном месте и всегда с проверкой администратора.
 """
 import logging
 from aiogram import F, Router
@@ -18,12 +23,7 @@ from keyboards import (
     get_stars_rating_kb,
 )
 from states import ReviewStates
-from storage import (
-    add_review,
-    delete_review,
-    get_approved_reviews,
-    set_review_status,
-)
+from storage import add_review, get_approved_reviews
 
 logger = logging.getLogger(__name__)
 router = Router(name="reviews")
@@ -137,29 +137,3 @@ async def handle_review_text(message: Message, state: FSMContext):
             )
         except Exception as e:
             logger.error("Не удалось доставить отзыв админу %s: %s", admin_id, e)
-
-
-@router.callback_query(F.data.startswith("adm_rev_ok:"))
-async def cb_approve_rev(callback: CallbackQuery):
-    rev_id = int(callback.data.replace("adm_rev_ok:", ""))
-    await set_review_status(rev_id, True)
-    await callback.answer("Одобрено!")
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.reply(f"✅ Отзыв #{rev_id} опубликован в общем списке!")
-
-
-@router.callback_query(F.data.startswith("adm_rev_no:"))
-async def cb_reject_rev(callback: CallbackQuery):
-    rev_id = int(callback.data.replace("adm_rev_no:", ""))
-    await set_review_status(rev_id, False)
-    await callback.answer("Отклонено")
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.reply(f"❌ Отзыв #{rev_id} скрыт.")
-
-
-@router.callback_query(F.data.startswith("adm_rev_del:"))
-async def cb_rev_del(callback: CallbackQuery):
-    rev_id = int(callback.data.replace("adm_rev_del:", ""))
-    await delete_review(rev_id)
-    await callback.answer("Удалено из базы")
-    await callback.message.delete()

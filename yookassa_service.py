@@ -2,10 +2,8 @@
 yookassa_service.py — прямое взаимодействие с API ЮKassa (СБП и банковские карты).
 Поддерживает базовую цену из config.py и динамическую цену с учётом скидок/бонусов.
 """
-import asyncio
 import logging
 import socket
-import ssl
 import uuid
 import aiohttp
 
@@ -17,11 +15,12 @@ API_URL = "https://api.yookassa.ru/v3/payments"
 
 
 def _get_connector() -> aiohttp.TCPConnector:
-    """Создаёт TCP-коннектор с форсированным IPv4 (защита от сетевых сбоев)."""
-    ssl_ctx = ssl.create_default_context()
-    ssl_ctx.check_hostname = False
-    ssl_ctx.verify_mode = ssl.CERT_NONE
-    return aiohttp.TCPConnector(family=socket.AF_INET, ssl=ssl_ctx)
+    """
+    Создаёт TCP-коннектор с форсированным IPv4 (обход проблем с резолвом/IPv6 у некоторых хостингов).
+    Проверка TLS-сертификата НЕ отключается — соединение с API оплаты обязано быть проверенным,
+    иначе запросы (включая секретный ключ магазина) становятся уязвимы к перехвату (MITM).
+    """
+    return aiohttp.TCPConnector(family=socket.AF_INET)
 
 
 async def create_yookassa_payment(
@@ -79,14 +78,14 @@ async def create_yookassa_payment(
                 status = resp.status
                 data = await resp.json()
 
-                logger.info("⬅️ [ЮKassa REST] HTTP %d, ответ: %s", status, data)
+                logger.info("⬅️ [ЮKassa REST] HTTP %d, payment_id=%s", status, data.get("id"))
 
                 if status in (200, 201):
                     confirmation_url = data.get("confirmation", {}).get("confirmation_url")
                     payment_id = data.get("id")
                     return confirmation_url, payment_id
                 else:
-                    logger.error("❌ Ошибка ответа ЮKassa: %s", data)
+                    logger.error("❌ Ошибка ответа ЮKassa: HTTP %d", status)
                     return None, None
 
     except Exception as e:

@@ -4,10 +4,14 @@ handlers/interview.py — проведение мок-интервью:
 - Валидация развернутых ответов кандидата.
 - Обработка в реальном времени через Claude 3.5 Sonnet (llm_service.py).
 - Генерация итогового отчета и компиляция Word-файла (.docx).
+
+ВАЖНО: выбор направления (callback_data="track_*") и подтверждение сброса прогресса
+(callback_data="cmd_reset_confirm") обрабатываются в handlers/start.py и handlers/resume.py
+соответственно — здесь этих хэндлеров больше нет (раньше это были дублирующиеся, никогда
+не выполнявшиеся обработчики из-за порядка подключения роутеров в handlers/__init__.py).
 """
 import logging
 from aiogram import Bot, F, Router
-from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.utils.chat_action import ChatActionSender
@@ -24,7 +28,7 @@ from keyboards import (
 from llm_service import generate_final_report, generate_resume_draft, process_answer
 from questions import TOTAL_QUESTIONS, TRACKS, get_question
 from states import InterviewStates
-from storage import get_user, save_user
+from storage import get_user, save_user, user_has_track_access
 from ui_utils import format_question_card
 
 logger = logging.getLogger(__name__)
@@ -33,33 +37,6 @@ router = Router(name="interview")
 
 def get_pay_inline_keyboard() -> InlineKeyboardMarkup:
     return get_paywall_keyboard()
-
-
-# 1. Выбор направления
-@router.callback_query(F.data.startswith("track_"))
-async def process_track_selection(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-    track_key = callback.data.replace("track_", "")
-    track_title = TRACKS.get(track_key, "Backend-разработка")
-
-    user_data = await get_user(callback.from_user.id)
-    user_data["track"] = track_key
-    user_data["current_question_index"] = 0
-    user_data["answers"] = []
-    user_data["finished"] = False
-    await save_user(callback.from_user.id, user_data)
-
-    await state.set_state(InterviewStates.waiting_answer)
-    await callback.message.answer(
-        f"🎯 Выбрано направление: <b>{track_title}</b>\n"
-        f"Интервью состоит из {TOTAL_QUESTIONS} вопросов. Начинаем!",
-        reply_markup=remove_reply_kb,
-        parse_mode="HTML",
-    )
-
-    first_question = get_question(track_key, 0)
-    card = format_question_card(first_question, 0)
-    await callback.message.answer(card, reply_markup=get_interview_toolbar(), parse_mode="HTML")
 
 
 # --- ДЕЙСТВИЯ ПОД ВОПРОСОМ (INLINE) ---
@@ -108,32 +85,13 @@ async def process_skip_callback(callback: CallbackQuery, state: FSMContext, bot:
 
 @router.callback_query(F.data == "cmd_reset_prompt")
 async def process_reset_prompt(callback: CallbackQuery):
-    """Запрос подтверждения перезапуска."""
+    """Запрос подтверждения перезапуска (сама кнопка подтверждения обрабатывается в handlers/resume.py)."""
     await callback.answer()
     await callback.message.answer(
         "⚠️ <b>Внимание:</b> Вы собираетесь начать интервью заново. Все ответы текущей сессии будут сброшены.\n\nВы уверены?",
         reply_markup=get_reset_confirm_keyboard(),
         parse_mode="HTML",
     )
-
-
-@router.callback_query(F.data == "cmd_reset_confirm")
-async def process_reset_confirm(callback: CallbackQuery, state: FSMContext):
-    """Подтверждённый сброс прогресса и перезапуск."""
-    await callback.answer("Прогресс сброшен")
-    user_data = await get_user(callback.from_user.id)
-    user_data["current_question_index"] = 0
-    user_data["answers"] = []
-    user_data["finished"] = False
-    await save_user(callback.from_user.id, user_data)
-
-    await state.set_state(InterviewStates.waiting_answer)
-    track = user_data.get("track", "backend")
-    await callback.message.answer("🔄 <b>Прогресс сброшен. Начинаем с 1-го вопроса!</b>", parse_mode="HTML")
-
-    first_question = get_question(track, 0)
-    card = format_question_card(first_question, 0)
-    await callback.message.answer(card, reply_markup=get_interview_toolbar(), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "cmd_resume")
@@ -214,14 +172,18 @@ async def proceed_after_answer(message: Message, state: FSMContext, bot: Bot, us
     next_index = user_data["current_question_index"]
     track = user_data.get("track", "backend")
 
-    # Пейволл после бесплатных вопросов
-    if next_index == FREE_QUESTIONS_COUNT and not user_data.get("paid"):
+    # Пейволл после бесплатных вопросов.
+    # Доступ проверяется ПО КОНКРЕТНОМУ НАПРАВЛЕНИЮ: если пользователь уже оплачивал
+    # другое направление, это не даёт доступ к текущему — платить нужно за каждое направление отдельно,
+    # если только у пользователя нет полного безлимитного доступа (user_data["paid"] = True).
+    if next_index == FREE_QUESTIONS_COUNT and not user_has_track_access(user_data, track):
         await state.set_state(InterviewStates.waiting_payment)
+        track_title = TRACKS.get(track, "выбранному направлению")
         paywall_text = (
             "⭐️ <b>Базовый блок успешно завершён!</b>\n\n"
-            "Вы отлично справляетесь! Чтобы открыть доступ к углубленным архитектурным вопросам, "
-            "получить аудит компетенций по 15 критериям и сгенерировать персональный Word-отчёт (.docx), "
-            "разблокируйте полный доступ."
+            f"Вы отлично справляетесь! Чтобы открыть доступ к углубленным вопросам по направлению "
+            f"«<b>{track_title}</b>», получить аудит компетенций по 15 критериям и сгенерировать "
+            "персональный Word-отчёт (.docx), разблокируйте полный доступ к этому направлению."
         )
         await message.answer(paywall_text, reply_markup=get_paywall_keyboard(), parse_mode="HTML")
         return

@@ -9,7 +9,12 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from config import PAYMENTS_LOG_FILE, USERS_DATA_FILE
+from config import (
+    PAYMENTS_LOG_FILE,
+    REFERRAL_BONUS_PER_INVITE,
+    REFERRAL_FULL_ACCESS_THRESHOLD,
+    USERS_DATA_FILE,
+)
 
 ADMINS_DATA_FILE = "data/admins.json"
 REVIEWS_DATA_FILE = "data/reviews.json"
@@ -88,6 +93,7 @@ def _default_user_record(
         "username": username or "",
         "full_name": full_name or "",
         "paid": paid,
+        "paid_tracks": [],
         "track": track,
         "current_question_index": 0,
         "answers": [],
@@ -151,12 +157,12 @@ async def register_user_with_ref(
                 referrer_id=referrer_id,
                 campaign=campaign_tag,
             )
-            # Начисление 150 бонусов рефереру
+            # Начисление бонусов рефереру
             if referrer_id and str(referrer_id) in users and str(referrer_id) != key:
                 ref_user = users[str(referrer_id)]
-                ref_user["bonus_balance"] = ref_user.get("bonus_balance", 0) + 150
+                ref_user["bonus_balance"] = ref_user.get("bonus_balance", 0) + REFERRAL_BONUS_PER_INVITE
                 ref_user["referrals_count"] = ref_user.get("referrals_count", 0) + 1
-                if ref_user["bonus_balance"] >= 600:
+                if ref_user["bonus_balance"] >= REFERRAL_FULL_ACCESS_THRESHOLD:
                     ref_user["paid"] = True
 
             if campaign_tag:
@@ -186,6 +192,7 @@ async def reset_user(telegram_id: int) -> None:
             "username": existing.get("username", ""),
             "full_name": existing.get("full_name", ""),
             "paid": existing.get("paid", False),
+            "paid_tracks": existing.get("paid_tracks", []),
             "track": None,
             "current_question_index": 0,
             "answers": [],
@@ -200,7 +207,48 @@ async def reset_user(telegram_id: int) -> None:
         _write_json(USERS_DATA_FILE, users)
 
 
+def user_has_track_access(user_data: dict, track: str | None) -> bool:
+    """
+    Проверяет, открыт ли у пользователя доступ к конкретному направлению собеседования.
+
+    - "paid" = True — это полный безлимитный доступ ко ВСЕМ направлениям
+      (выдаётся администратором вручную или автоматически по реферальной программе).
+    - "paid_tracks" — список направлений, оплаченных по отдельности обычной оплатой
+      (Stars / СБП / промокод). Доступ к каждому новому направлению нужно оплачивать заново,
+      если у пользователя нет безлимитного "paid".
+    """
+    if user_data.get("paid"):
+        return True
+    if track and track in user_data.get("paid_tracks", []):
+        return True
+    return False
+
+
+async def grant_track_access(telegram_id: int, track: str) -> None:
+    """Открывает пользователю доступ к конкретному направлению (после успешной оплаты этого направления)."""
+    async with _file_lock:
+        users = _read_json(USERS_DATA_FILE, {})
+        key = str(telegram_id)
+        if key not in users:
+            return
+
+        paid_tracks = users[key].get("paid_tracks", [])
+        if track not in paid_tracks:
+            paid_tracks.append(track)
+        users[key]["paid_tracks"] = paid_tracks
+
+        campaign_tag = users[key].get("campaign")
+        if campaign_tag:
+            campaigns = _read_json(CAMPAIGNS_DATA_FILE, {})
+            if campaign_tag in campaigns:
+                campaigns[campaign_tag]["payments"] = campaigns[campaign_tag].get("payments", 0) + 1
+                _write_json(CAMPAIGNS_DATA_FILE, campaigns)
+
+        _write_json(USERS_DATA_FILE, users)
+
+
 async def set_user_paid_status(telegram_id: int, status: bool) -> bool:
+    """Выдаёт/забирает ПОЛНЫЙ безлимитный доступ ко всем направлениям (ручное решение администратора)."""
     async with _file_lock:
         users = _read_json(USERS_DATA_FILE, {})
         key = str(telegram_id)
@@ -232,7 +280,7 @@ async def adjust_user_bonuses(telegram_id: int, amount: int) -> int:
         key = str(telegram_id)
         if key in users:
             users[key]["bonus_balance"] = max(0, users[key].get("bonus_balance", 0) + amount)
-            if users[key]["bonus_balance"] >= 600:
+            if users[key]["bonus_balance"] >= REFERRAL_FULL_ACCESS_THRESHOLD:
                 users[key]["paid"] = True
             _write_json(USERS_DATA_FILE, users)
             return users[key]["bonus_balance"]

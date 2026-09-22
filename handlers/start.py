@@ -13,7 +13,12 @@ from aiogram.types import (
 )
 
 import storage
-from config import ADMIN_IDS, FREE_QUESTIONS_COUNT
+from config import (
+    ADMIN_IDS,
+    FREE_QUESTIONS_COUNT,
+    REFERRAL_BONUS_PER_INVITE,
+    REFERRAL_FULL_ACCESS_THRESHOLD,
+)
 from keyboards import (
     get_interview_toolbar,
     get_ready_keyboard,
@@ -135,26 +140,29 @@ async def cmd_referral(event: Message | CallbackQuery):
     bot_me = await event.bot.get_me()
     ref_link = f"https://t.me/{bot_me.username}?start=ref_{uid}"
 
-    progress = min(balance, 600)
-    filled_blocks = int((progress / 600) * 10)
+    threshold = REFERRAL_FULL_ACCESS_THRESHOLD
+    progress = min(balance, threshold)
+    filled_blocks = int((progress / threshold) * 10) if threshold else 0
     bar = "🟩" * filled_blocks + "⬜️" * (10 - filled_blocks)
+    friends_needed = threshold // REFERRAL_BONUS_PER_INVITE if REFERRAL_BONUS_PER_INVITE else 0
 
     status_str = (
-        "👑 <b>У вас уже разблокирован полный доступ!</b>"
+        "👑 <b>У вас уже разблокирован полный доступ ко всем направлениям!</b>"
         if has_paid
-        else f"🎯 До вечного доступа ко всем вопросам: <b>{max(0, 600 - balance)} бонусов</b>"
+        else f"🎯 До вечного доступа ко всем направлениям: <b>{max(0, threshold - balance)} бонусов</b>"
     )
 
     text = (
         "🎁 <b>Реферальная программа тренажёра</b>\n\n"
         "Приглашайте друзей и готовьтесь к собеседованиям бесплатно!\n\n"
-        "• За каждого приглашённого друга: <b>+150 бонусов</b>\n"
-        "• При накоплении <b>600 бонусов</b> (всего 4 друга) автоматически открывается <b>вечный доступ</b>!\n"
-        "• Бонусы можно тратить на скидку при оплате (1 бонус = 1 рубль скидки).\n\n"
+        f"• За каждого приглашённого друга: <b>+{REFERRAL_BONUS_PER_INVITE} бонусов</b>\n"
+        f"• При накоплении <b>{threshold} бонусов</b> (всего {friends_needed} друзей) автоматически "
+        "открывается <b>вечный доступ ко всем направлениям</b>!\n"
+        "• Бонусы можно тратить на скидку при оплате конкретного направления (1 бонус = 1 рубль скидки).\n\n"
         f"📊 <b>Ваша статистика:</b>\n"
         f"├ Баланс: <b>{balance} бонусов</b>\n"
         f"├ Приглашено: <b>{refs} чел.</b>\n"
-        f"└ {bar} ({balance}/600)\n\n"
+        f"└ {bar} ({balance}/{threshold})\n\n"
         f"{status_str}\n\n"
         f"🔗 <b>Ваша реферальная ссылка:</b>\n"
         f"<code>{ref_link}</code>"
@@ -202,11 +210,11 @@ async def cmd_continue(message: Message, state: FSMContext) -> None:
         await send_final_report(message, state, message.from_user.id)
         return
 
-    if index >= FREE_QUESTIONS_COUNT and not user.get("paid"):
+    if index >= FREE_QUESTIONS_COUNT and not storage.user_has_track_access(user, track):
         from handlers.interview import get_pay_inline_keyboard
         await state.set_state(InterviewStates.waiting_payment)
         await message.answer(
-            "🔒 Вы остановились на этапе оплаты доступа.",
+            "🔒 Вы остановились на этапе оплаты доступа к этому направлению.",
             reply_markup=get_pay_inline_keyboard(),
             parse_mode="HTML",
         )
@@ -241,10 +249,13 @@ async def cmd_help(message: Message) -> None:
         "• /start — главное меню тренажёра.\n"
         "• /continue — продолжить начатое собеседование.\n"
         "• /pay — оплатить доступ, ввести промокод или списать бонусы.\n"
-        "• /ref — реферальная программа (+150 бонусов за друга).\n"
+        "• /ref — реферальная программа (бонусы за друга).\n"
         "• /reviews — отзывы участников.\n"
         "• /reset — сбросить ответы и выбрать другое направление.\n"
         "• /support — техподдержка.\n\n"
+        "💡 <i>Оплата открывает доступ к конкретному направлению собеседования. "
+        "Если захотите пройти другое направление — доступ к нему нужно будет открыть отдельно "
+        "(если у вас нет полного доступа за реферальную программу).</i>\n\n"
         "💡 <i>В левом нижнем углу экрана всегда доступна кнопка Menu со всеми командами!</i>"
     )
     await message.answer(help_text, parse_mode="HTML")
@@ -318,6 +329,11 @@ async def process_support_message(message: Message, state: FSMContext, bot: Bot)
 
 # -------------------------------------------------------------
 # ВЫБОР СПЕЦИАЛЬНОСТИ И ПРАВИЛА
+#
+# Это единственное место в проекте, которое обрабатывает выбор направления
+# (callback_data="track_*"). Раньше похожий хэндлер без фильтра состояния
+# существовал ещё и в handlers/interview.py — из-за порядка подключения роутеров
+# он перехватывал нажатие раньше и экран с правилами ниже никогда не показывался.
 # -------------------------------------------------------------
 
 @router.callback_query(F.data == "start_choose_track")
@@ -325,7 +341,8 @@ async def cb_show_tracks(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(InterviewStates.selecting_track)
     choose_text = (
         "🎯 <b>Выберите направление для прохождения собеседования:</b>\n\n"
-        "<i>Вопросы будут подобраны строго под ваш стек.</i>"
+        "<i>Вопросы будут подобраны строго под ваш стек. Доступ оплачивается отдельно "
+        "для каждого направления.</i>"
     )
     if callback.message:
         await callback.message.edit_text(choose_text, reply_markup=get_tracks_keyboard(), parse_mode="HTML")
@@ -349,11 +366,18 @@ async def cb_track_selected(callback: CallbackQuery, state: FSMContext) -> None:
     track_name = TRACKS[track_key]
     await state.set_state(InterviewStates.ready_to_start)
 
+    already_paid = storage.user_has_track_access(user, track_key)
+    payment_note = (
+        "• Это направление у вас уже оплачено — вопросы будут доступны полностью.\n"
+        if already_paid
+        else f"• Первые <b>{FREE_QUESTIONS_COUNT} вопроса доступны бесплатно</b>, дальше — по оплате этого направления.\n"
+    )
+
     rules_text = (
         f"✅ <b>Выбранное направление: {track_name}</b>\n\n"
         "📋 <b>Как будет проходить интервью:</b>\n"
         f"• Вас ждёт <b>{TOTAL_QUESTIONS} вопросов</b>: реальный опыт, глубокий Hard Skills и Soft Skills.\n"
-        f"• Первые <b>{FREE_QUESTIONS_COUNT} вопроса доступны бесплатно</b>.\n"
+        f"{payment_note}"
         "• На каждый ваш ответ ментор даёт <b>разбор</b> сильных и слабых сторон.\n"
         "• В финале формируется <b>комплексный Word-отчёт (.docx)</b>.\n\n"
         "💡 <b>Главное правило:</b>\n"
@@ -426,11 +450,11 @@ async def process_unhandled_text(message: Message, state: FSMContext) -> None:
     index = user.get("current_question_index", 0)
 
     if track and not finished and index < TOTAL_QUESTIONS:
-        if index >= FREE_QUESTIONS_COUNT and not user.get("paid"):
+        if index >= FREE_QUESTIONS_COUNT and not storage.user_has_track_access(user, track):
             from handlers.interview import get_pay_inline_keyboard
             await state.set_state(InterviewStates.waiting_payment)
             await message.answer(
-                "🔒 Вы остановились на этапе оплаты доступа.",
+                "🔒 Вы остановились на этапе оплаты доступа к этому направлению.",
                 reply_markup=get_pay_inline_keyboard(),
                 parse_mode="HTML",
             )
