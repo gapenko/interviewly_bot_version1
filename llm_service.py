@@ -15,7 +15,10 @@ llm_service.py — обращение к LLM API (через SpeShu.AI / Anthrop
 3. Оценка не пишется в текст реплики — модель возвращает её служебной строкой
    [[score: N]], которую код вырезает и сохраняет отдельно (для отчёта и .docx).
 4. Подсказка генерируется под конкретный вопрос.
-5. Повышена «температура» для реплик, чтобы формулировки не повторялись.
+5. Параметр temperature в запросы НЕ передаётся: новые модели Claude отклоняют его с ошибкой
+   400 («`temperature` is deprecated for this model»), а некоторые прокси вместе с ним отдают
+   ошибку «temperature and top_p cannot both be specified». Разнообразие формулировок
+   обеспечивают промпт и контекст разговора; значение по умолчанию у модели и так высокое.
 """
 import html
 import logging
@@ -267,7 +270,6 @@ async def interviewer_reply(
         response = await client.messages.create(
             model=LLM_MODEL,
             max_tokens=500,
-            temperature=0.9,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
         )
@@ -315,7 +317,6 @@ async def generate_hint(question_text: str, track_title: str = "IT") -> str | No
         response = await client.messages.create(
             model=LLM_MODEL,
             max_tokens=300,
-            temperature=0.8,
             system=HINT_SYSTEM_PROMPT.format(track=track_title),
             messages=[{"role": "user", "content": f"Вопрос, к которому нужна подсказка:\n{question_text}"}],
         )
@@ -343,7 +344,6 @@ async def generate_final_report(qa_pairs: list[dict], track_title: str) -> str:
         response = await client.messages.create(
             model=LLM_MODEL,
             max_tokens=1500,
-            temperature=0.5,
             system=FINAL_REPORT_SYSTEM_PROMPT.format(track=track_title),
             messages=[{"role": "user", "content": transcript}],
         )
