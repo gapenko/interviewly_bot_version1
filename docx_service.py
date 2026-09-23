@@ -1,7 +1,9 @@
 """
 docx_service.py — генерация форматированного Word-документа (.docx).
 """
+import html
 import io
+import re
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -35,9 +37,9 @@ def create_candidate_docx(username: str, report_text: str, resume_draft: str, an
     doc.add_paragraph("―" * 50)
 
     def clean_html(text: str) -> str:
-        for tag in ["<b>", "</b>", "<i>", "</i>", "<code>", "</code>", "<blockquote>", "</blockquote>"]:
-            text = text.replace(tag, "")
-        return text.replace("&lt;", "<").replace("&gt;", ">").strip()
+        # Убираем любые HTML-теги Telegram и раскодируем сущности (&lt; &gt; &amp; и т.д.)
+        text = re.sub(r"</?(b|i|u|s|code|pre|blockquote)>", "", str(text or ""))
+        return html.unescape(text).strip()
 
     # 1. Отчет
     h1 = doc.add_paragraph()
@@ -83,7 +85,9 @@ def create_candidate_docx(username: str, report_text: str, resume_draft: str, an
 
         if item.get("feedback"):
             p_f = doc.add_paragraph()
-            f_run = p_f.add_run(f"Ревью ментора:\n{clean_html(item.get('feedback', ''))}")
+            score = item.get("score")
+            score_note = f" (оценка: {score}/10)" if score else ""
+            f_run = p_f.add_run(f"Комментарий ментора{score_note}:\n{clean_html(item.get('feedback', ''))}")
             f_run.italic = True
             f_run.font.name = "Calibri"
             f_run.font.size = Pt(9.5)
