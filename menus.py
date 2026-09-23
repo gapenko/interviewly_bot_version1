@@ -2,16 +2,17 @@
 menus.py — тексты и клавиатуры общих экранов (главное меню, выбор направления, правила,
 результаты). Вынесены из хэндлеров, чтобы любой модуль мог показать их без циклических импортов.
 """
+import re
 from typing import Optional
 
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup
 
 import storage
-from config import FREE_QUESTIONS_COUNT
+from config import FREE_QUESTIONS_COUNT, SHOW_ANSWER_SCORE
 from keyboards import btn, ikb, main_menu_kb, menu_btn, rules_kb, tracks_kb
 from questions import TOTAL_QUESTIONS, TRACKS
-from screen import esc
+from screen import esc, truncate_plain
 
 View = tuple[str, Optional[InlineKeyboardMarkup]]
 
@@ -177,8 +178,83 @@ def results_view(user: dict) -> View:
             ikb([btn("🚀 Начать собеседование", "menu_start")], [menu_btn()]),
         )
     kb = ikb(
+        [btn("📜 Все ответы и комментарии", "res_tr:0")],
         [btn("📄 Черновик резюме", "res_resume"), btn("📥 Скачать .docx", "res_docx")],
         [btn("🔍 Аудит моего резюме", "res_audit")],
         [menu_btn()],
     )
     return report_text(result), kb
+
+
+# =========================================================
+# СТЕНОГРАММА: ВСЕ ОТВЕТЫ И КОММЕНТАРИИ
+# =========================================================
+
+TRANSCRIPT_PAGE_LIMIT = 3500   # символов на страницу (лимит Telegram — 4096, запас на заголовок)
+TRANSCRIPT_ITEM_LIMIT = 3000   # один вопрос с ответом и комментарием не длиннее этого
+SKIPPED_PREFIX = "[Вопрос пропущен"
+SEPARATOR_LINE = "━━━━━━━━━━━━━━━━━━"
+
+
+def _plain_feedback(feedback: str, limit: int) -> str:
+    """Комментарий без тегов (он уже экранирован), обрезанный до limit символов."""
+    return truncate_plain(re.sub(r"</?(b|i|code)>", "", feedback or ""), limit)
+
+
+def _transcript_item(number: int, item: dict) -> str:
+    question = truncate_plain(esc(item.get("question_text", "")), 500)
+    answer = str(item.get("answer", ""))
+    feedback = item.get("feedback") or ""
+    head = f"<b>Вопрос {number}.</b> {question}"
+
+    if answer.startswith(SKIPPED_PREFIX):
+        return f"{head}\n\n<i>Вопрос пропущен.</i>"
+
+    score = ""
+    if SHOW_ANSWER_SCORE and item.get("score"):
+        score = f"\n<i>Оценка ответа: {item['score']}/10</i>"
+
+    def build(answer_limit: int, feedback_text: str) -> str:
+        quote = truncate_plain(esc(answer), answer_limit)
+        return (
+            f"{head}\n\n"
+            f"👤 <b>Ваш ответ:</b>\n<blockquote expandable>{quote}</blockquote>\n"
+            f"💬 <b>Комментарий интервьюера:</b>\n{feedback_text}{score}"
+        )
+
+    text = build(1500, feedback)
+    if len(text) > TRANSCRIPT_ITEM_LIMIT:
+        text = build(800, _plain_feedback(feedback, 1500))
+    return text
+
+
+def transcript_pages(result: dict) -> list[str]:
+    """Разбивает все вопросы, ответы и комментарии на страницы, умещающиеся в сообщение Telegram."""
+    items = [_transcript_item(i + 1, a) for i, a in enumerate(result.get("answers") or [])]
+    pages: list[list[str]] = []
+    size = 0
+    for item in items:
+        extra = len(item) + len(SEPARATOR_LINE) + 4
+        if pages and size + extra <= TRANSCRIPT_PAGE_LIMIT:
+            pages[-1].append(item)
+            size += extra
+        else:
+            pages.append([item])
+            size = len(item)
+    return [f"\n\n{SEPARATOR_LINE}\n\n".join(p) for p in pages]
+
+
+def transcript_view(result: Optional[dict], page: int) -> tuple[str, int, int]:
+    """Текст страницы стенограммы. Возвращает (текст, номер страницы, всего страниц)."""
+    title = esc((result or {}).get("track_title") or track_title((result or {}).get("track")))
+    pages = transcript_pages(result or {})
+    if not pages:
+        return (
+            f"📜 <b>Ответы и комментарии · {title}</b>\n\nВ этом собеседовании нет сохранённых ответов.",
+            0, 1,
+        )
+    page = max(0, min(page, len(pages) - 1))
+    header = f"📜 <b>Ответы и комментарии · {title}</b>"
+    if len(pages) > 1:
+        header += f"\n<i>Страница {page + 1} из {len(pages)}</i>"
+    return f"{header}\n\n{pages[page]}", page, len(pages)

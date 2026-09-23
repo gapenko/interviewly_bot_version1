@@ -10,6 +10,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 class InterviewStates(StatesGroup):
     waiting_answer = State()
+    reading_feedback = State()   # показан комментарий к ответу, ждём кнопку «Следующий вопрос»
 
 
 class ResumeStates(StatesGroup):

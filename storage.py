@@ -146,6 +146,7 @@ def _default_user_record(
         "current_question_index": 0,
         "answers": [],
         "finished": False,
+        "awaiting_next": False,   # показан комментарий к ответу, ждём нажатия «Следующий вопрос»
         "last_result": None,      # последний завершённый разбор: отчёт, резюме, ответы
         "bonus_balance": 0,
         "referrals_count": 0,
@@ -284,22 +285,25 @@ async def save_user(telegram_id: int, user_data: dict) -> None:
 async def reset_user(telegram_id: int) -> dict:
     """Сбрасывает прогресс текущего собеседования. Оплаты, бонусы и последний результат сохраняются."""
     def _reset(u: dict) -> None:
-        u.update(track=None, current_question_index=0, answers=[], finished=False)
+        u.update(track=None, current_question_index=0, answers=[], finished=False, awaiting_next=False)
     return await mutate_user(telegram_id, _reset)
 
 
 async def start_track(telegram_id: int, track: str) -> dict:
     """Начинает новое собеседование по направлению с первого вопроса."""
     def _start(u: dict) -> None:
-        u.update(track=track, current_question_index=0, answers=[], finished=False)
+        u.update(track=track, current_question_index=0, answers=[], finished=False, awaiting_next=False)
     return await mutate_user(telegram_id, _start)
 
 
-async def append_answer(telegram_id: int, expected_index: int, record: dict) -> bool:
+async def append_answer(telegram_id: int, expected_index: int, record: dict, *, await_next: bool = False) -> bool:
     """
     Добавляет ответ и сдвигает индекс вопроса — только если индекс не изменился с момента,
     когда ответ начали обрабатывать. Защищает от «двойных» ответов при быстрых сообщениях
     (раньше два сообщения подряд могли записать ответ на один вопрос дважды или потерять один из них).
+
+    await_next=True — после ответа показывается комментарий интервьюера, и следующий вопрос
+    откроется только по кнопке «Следующий вопрос» (флаг ставится в той же записи, атомарно).
     """
     async with _file_lock:
         users = _read_json(USERS_DATA_FILE, {})
@@ -308,6 +312,7 @@ async def append_answer(telegram_id: int, expected_index: int, record: dict) -> 
             return False
         u.setdefault("answers", []).append(record)
         u["current_question_index"] = expected_index + 1
+        u["awaiting_next"] = await_next
         _write_json(USERS_DATA_FILE, users)
         return True
 

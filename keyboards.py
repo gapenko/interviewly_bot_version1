@@ -87,6 +87,15 @@ def interview_kb(*, hint_shown: bool = False) -> InlineKeyboardMarkup:
     )
 
 
+def feedback_kb(*, is_last: bool) -> InlineKeyboardMarkup:
+    """Под комментарием интервьюера: переход к следующему вопросу (или к итогам после последнего)."""
+    next_btn = btn("🏁 Перейти к итоговому разбору", "iv_next") if is_last else btn("➡️ Следующий вопрос", "iv_next")
+    return ikb(
+        [next_btn],
+        [btn("🏠 Главное меню (прогресс сохранится)", "nav_menu")],
+    )
+
+
 def reset_confirm_kb() -> InlineKeyboardMarkup:
     return ikb(
         [btn("⚠️ Да, начать заново", "iv_reset_ok")],
@@ -107,6 +116,7 @@ def back_to_question_kb() -> InlineKeyboardMarkup:
 
 def finished_kb() -> InlineKeyboardMarkup:
     return ikb(
+        [btn("📜 Все ответы и комментарии", "res_tr:0")],
         [btn("📄 Черновик резюме", "res_resume"), btn("✍️ Оставить отзыв", "rv_new")],
         [btn("🔄 Пройти другое направление", "menu_start")],
         [menu_btn()],
@@ -115,6 +125,16 @@ def finished_kb() -> InlineKeyboardMarkup:
 
 def continue_kb() -> InlineKeyboardMarkup:
     return ikb([btn("▶️ Продолжить собеседование", "interview_continue")], [menu_btn()])
+
+
+def transcript_kb(page: int, pages: int) -> InlineKeyboardMarkup:
+    """Листание стенограммы «вопрос — ответ — комментарий»."""
+    nav = []
+    if page > 0:
+        nav.append(btn("◀️ Назад", f"res_tr:{page - 1}"))
+    if page < pages - 1:
+        nav.append(btn("Далее ▶️", f"res_tr:{page + 1}"))
+    return ikb(nav, [btn("📊 К итогам", "results")], [menu_btn()])
 
 
 # =========================================================

@@ -1,6 +1,6 @@
 """
-handlers/resume.py — раздел «Мои результаты»: последний итоговый разбор, черновик резюме,
-повторная выгрузка Word-отчёта и аудит резюме пользователя.
+handlers/resume.py — раздел «Мои результаты»: последний итоговый разбор, все ответы
+с комментариями интервьюера, черновик резюме, повторная выгрузка Word-отчёта и аудит резюме.
 
 Раньше команда /resume показывала меню с кнопками, у которых не было обработчиков.
 """
@@ -14,9 +14,9 @@ from aiogram.utils.chat_action import ChatActionSender
 
 import storage
 from handlers.interview import send_result_docx
-from keyboards import btn, ikb, menu_btn
+from keyboards import btn, ikb, menu_btn, transcript_kb
 from llm_service import audit_user_resume
-from menus import fit_long_html, results_view
+from menus import fit_long_html, results_view, transcript_view
 from screen import delete_user_message, esc, not_command, show_screen
 from states import ResumeStates
 
@@ -70,6 +70,24 @@ async def cb_resume_draft(callback: CallbackQuery, bot: Bot):
         3800, "<i>Полная версия — в Word-документе.</i>",
     )
     await show_screen(bot, _chat_id(callback), text, _back_to_results_kb(), source=callback.message)
+
+
+@router.callback_query(F.data.startswith("res_tr:"))
+async def cb_transcript(callback: CallbackQuery, bot: Bot):
+    """Все ответы кандидата и комментарии интервьюера из последнего собеседования (с листанием)."""
+    await callback.answer()
+    user = await storage.get_user(callback.from_user.id)
+    result = user.get("last_result")
+    if not result:
+        text, kb = results_view(user)
+        await show_screen(bot, _chat_id(callback), text, kb, source=callback.message)
+        return
+    try:
+        page = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        page = 0
+    text, page, pages = transcript_view(result, page)
+    await show_screen(bot, _chat_id(callback), text, transcript_kb(page, pages), source=callback.message)
 
 
 @router.callback_query(F.data.in_({"res_docx", "resume_download"}))
