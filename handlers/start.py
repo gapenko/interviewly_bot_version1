@@ -1,6 +1,7 @@
 """
 handlers/start.py — приветствие, выбор направления, рефералы, навигация назад и поддержка.
 """
+import html
 import logging
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandStart
@@ -16,6 +17,7 @@ import storage
 from config import (
     ADMIN_IDS,
     FREE_QUESTIONS_COUNT,
+    MENTOR_NAME,
     REFERRAL_BONUS_PER_INVITE,
     REFERRAL_FULL_ACCESS_THRESHOLD,
 )
@@ -25,11 +27,10 @@ from keyboards import (
     get_support_cancel_keyboard,
     get_tracks_keyboard,
     get_welcome_inline_keyboard,
-    remove_reply_kb,
 )
 from questions import TOTAL_QUESTIONS, TRACKS, get_question
 from states import InterviewStates, SupportStates
-from ui_utils import format_question_card
+from ui_utils import build_question_message, first_name
 
 logger = logging.getLogger(__name__)
 router = Router(name="start")
@@ -66,12 +67,9 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     )
 
     if user.get("track") and not user.get("finished", False) and user.get("current_question_index", 0) > 0:
+        # Фраза «продолжаем с того места…» добавляется самим ask_current_question (режим "resume")
         await state.set_state(InterviewStates.waiting_answer)
-        await message.answer(
-            "Продолжаем собеседование с того места, где вы остановились 👇",
-            reply_markup=remove_reply_kb,
-        )
-        await ask_current_question(message, state, message.from_user.id)
+        await ask_current_question(message, state, message.from_user.id, mode="resume")
         return
 
     await state.clear()
@@ -221,8 +219,7 @@ async def cmd_continue(message: Message, state: FSMContext) -> None:
         return
 
     await state.set_state(InterviewStates.waiting_answer)
-    await message.answer("🔄 <b>Собеседование возобновлено!</b>", parse_mode="HTML")
-    await ask_current_question(message, state, message.from_user.id)
+    await ask_current_question(message, state, message.from_user.id, mode="resume")
 
 
 @router.message(Command("reset"))
@@ -378,7 +375,8 @@ async def cb_track_selected(callback: CallbackQuery, state: FSMContext) -> None:
         "📋 <b>Как будет проходить интервью:</b>\n"
         f"• Вас ждёт <b>{TOTAL_QUESTIONS} вопросов</b>: реальный опыт, глубокий Hard Skills и Soft Skills.\n"
         f"{payment_note}"
-        "• На каждый ваш ответ ментор даёт <b>разбор</b> сильных и слабых сторон.\n"
+        f"• Собеседование ведёт ментор <b>{html.escape(MENTOR_NAME)}</b>: после каждого ответа он коротко скажет, "
+        "что прозвучало сильно, а что стоит докрутить.\n"
         "• В финале формируется <b>комплексный Word-отчёт (.docx)</b>.\n\n"
         "💡 <b>Главное правило:</b>\n"
         "Отвечайте <b>максимально развёрнуто</b>. Односложные ответы не позволят оценить ваш грейд!"
@@ -403,7 +401,18 @@ async def cb_first_question(callback: CallbackQuery, state: FSMContext) -> None:
 # ОТПРАВКА ТЕКУЩЕГО ВОПРОСА
 # -------------------------------------------------------------
 
-async def ask_current_question(message: Message, state: FSMContext, user_id: int | None = None) -> None:
+async def ask_current_question(
+    message: Message,
+    state: FSMContext,
+    user_id: int | None = None,
+    mode: str | None = None,
+) -> None:
+    """
+    Отправляет текущий вопрос от лица ментора.
+
+    mode: "first" — с приветствием (начало интервью), "resume" — с фразой «продолжаем…».
+    Если не указан: для самого первого вопроса — "first", иначе — "resume".
+    """
     uid = user_id or (message.from_user.id if message.from_user else None)
     if not uid:
         return
@@ -422,11 +431,26 @@ async def ask_current_question(message: Message, state: FSMContext, user_id: int
         await send_final_report(message, state, uid)
         return
 
+    # Единая проверка пейволла для всех точек входа (/start, /continue, после оплаты и т.д.)
+    from handlers.interview import needs_payment, show_paywall
+    if needs_payment(user, index):
+        await show_paywall(message, state, track)
+        return
+
     question = get_question(track, index)
     await state.set_state(InterviewStates.waiting_answer)
     await state.update_data(current_question_id=question["id"])
 
-    card = format_question_card(question, index)
+    if mode is None:
+        mode = "first" if index == 0 and not user.get("answers") else "resume"
+
+    card = build_question_message(
+        question,
+        index,
+        mode=mode,
+        candidate_name=first_name(user.get("full_name")),
+        track_title=TRACKS.get(track),
+    )
     await message.bot.send_message(
         chat_id=uid,
         text=card,
