@@ -19,7 +19,12 @@ raw_admin_ids = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS: list[int] = [
     int(x.strip()) for x in raw_admin_ids.split(",") if x.strip().isdigit()
 ]
-ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "admin123")
+# Пароль для команды /auth. Если переменная не задана — вход по паролю отключён
+# (раньше по умолчанию подставлялся пароль "admin123").
+ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "").strip()
+# Защита от подбора пароля: после N неудачных попыток /auth блокируется на M минут.
+AUTH_MAX_ATTEMPTS = int(os.getenv("AUTH_MAX_ATTEMPTS", "5"))
+AUTH_LOCK_MINUTES = int(os.getenv("AUTH_LOCK_MINUTES", "30"))
 
 # --- LLM Service (SpeShu.AI / Anthropic) ---
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
@@ -29,15 +34,10 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.speshu.ai/v1")
 # --- Настройки собеседования ---
 FREE_QUESTIONS_COUNT = int(os.getenv("FREE_QUESTIONS_COUNT", "4"))
 
-# --- Персона ментора (живое общение вместо шаблонного "AI-ассистента") ---
-# Имя интервьюера, от лица которого ведётся собеседование.
-MENTOR_NAME = os.getenv("MENTOR_NAME", "Алексей")
 # Показывать ли оценку X/10 сразу после каждого ответа. По умолчанию выключено:
-# живой интервьюер не выставляет баллы вслух после каждой реплики. Оценки всё равно
+# на реальном собеседовании баллы не озвучивают после каждого ответа. Оценки всё равно
 # сохраняются и попадают в итоговый отчёт и .docx.
 SHOW_ANSWER_SCORE = os.getenv("SHOW_ANSWER_SCORE", "0") == "1"
-# Небольшая пауза с индикатором «печатает…» перед следующим вопросом — ритм живой переписки.
-HUMAN_TYPING_DELAY = os.getenv("HUMAN_TYPING_DELAY", "1") == "1"
 
 # --- Настройки платежей ---
 # ACCESS_PRICE_STARS — актуальное имя переменной для цены в Telegram Stars.
@@ -48,8 +48,11 @@ STARS_PRICE = ACCESS_PRICE_STARS  # алиас, чтобы не ломать к�
 # Стоимость в рублях (СБП / ЮKassa)
 SBP_PRICE_RUB = int(os.getenv("SBP_PRICE_RUB", "100"))
 
+# Сколько бонусов списывается за 1 звезду скидки при оплате в Telegram Stars
+# (при оплате в рублях 1 бонус = 1 рубль скидки).
+BONUSES_PER_STAR = max(1, int(os.getenv("BONUSES_PER_STAR", "4")))
+
 # --- Реферальная программа ---
-# Вынесено из кода в конфиг — раньше числа 150 и 600 были "зашиты" в нескольких местах storage.py и handlers/start.py.
 REFERRAL_BONUS_PER_INVITE = int(os.getenv("REFERRAL_BONUS_PER_INVITE", "150"))
 REFERRAL_FULL_ACCESS_THRESHOLD = int(os.getenv("REFERRAL_FULL_ACCESS_THRESHOLD", "600"))
 

@@ -1,99 +1,148 @@
 """
-handlers/reviews.py — система отзывов с кнопками возврата и модерацией.
+handlers/reviews.py — отзывы пользователей: просмотр опубликованных, отправка своего отзыва.
 
-Модерация отзывов (approve / reject / delete, callback_data="adm_rev_*") обрабатывается
-ТОЛЬКО в handlers/admin.py, за фильтром IsAdmin(). Раньше здесь была вторая, незащищённая
-копия тех же хэндлеров без какой-либо проверки прав — это дублирование убрано, чтобы модерация
-проверялась ровно в одном месте и всегда с проверкой администратора.
+Модерация (опубликовать / отклонить / удалить) — в handlers/admin.py, только для администраторов.
+
+Исправлено:
+- кнопка «Оставить отзыв» после собеседования не работала: она висела под Word-документом,
+  а бот пытался отредактировать документ как текстовое сообщение (Telegram возвращает ошибку);
+- текст отзыва вставлялся в HTML без экранирования — один отзыв с символом «<» ломал весь список;
+- длинные отзывы могли превысить лимит сообщения Telegram — теперь список постраничный.
 """
 import logging
-from aiogram import F, Router
+
+from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import (
-    CallbackQuery,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Message,
-)
+from aiogram.types import CallbackQuery, Message
 
-from keyboards import (
-    get_admin_review_kb,
-    get_cancel_review_keyboard,
-    get_stars_rating_kb,
-)
+import storage
+from keyboards import btn, ikb, menu_btn, review_notification_rows, review_text_kb, stars_rating_kb
+from screen import delete_user_message, esc, not_command, notify, show_screen, truncate_plain
 from states import ReviewStates
-from storage import add_review, get_approved_reviews
 
 logger = logging.getLogger(__name__)
 router = Router(name="reviews")
 
+PAGE_SIZE = 5
+REVIEW_MIN_LENGTH = 10
+REVIEW_MAX_LENGTH = 1000
+
+
+def _chat_id(callback: CallbackQuery) -> int:
+    return callback.message.chat.id if callback.message else callback.from_user.id
+
+
+def _stars(rating) -> str:
+    try:
+        n = max(1, min(5, int(rating)))
+    except (TypeError, ValueError):
+        n = 5
+    return "⭐️" * n
+
+
+async def reviews_view(page: int):
+    approved = await storage.get_approved_reviews()
+    total_pages = max(1, (len(approved) + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+
+    if not approved:
+        text = "⭐️ <b>Отзывы участников</b>\n\nОтзывов пока нет — вы можете оставить первый."
+    else:
+        avg = sum(int(r.get("rating", 5)) for r in approved) / len(approved)
+        lines = [f"⭐️ <b>Отзывы участников</b> · средняя оценка {avg:.1f} из 5 ({len(approved)})"]
+        for r in approved[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]:
+            lines.append(
+                f"{_stars(r.get('rating'))}  <b>{esc(r.get('full_name') or 'Кандидат')}</b> · {esc(r.get('created_at', ''))}\n"
+                f"<i>«{truncate_plain(esc(r.get('text', '')), 400)}»</i>"
+            )
+        text = "\n\n".join(lines)
+
+    nav = []
+    if total_pages > 1:
+        if page > 0:
+            nav.append(btn("◀️", f"reviews:{page - 1}"))
+        nav.append(btn(f"{page + 1} / {total_pages}", f"reviews:{page}"))
+        if page < total_pages - 1:
+            nav.append(btn("▶️", f"reviews:{page + 1}"))
+    kb = ikb(nav, [btn("✍️ Оставить отзыв", "rv_new")], [menu_btn()])
+    return text, kb
+
 
 @router.message(Command("reviews"))
-@router.callback_query(F.data == "btn_reviews_show")
-async def cmd_reviews(event: Message | CallbackQuery, state: FSMContext = None):
-    if state:
-        await state.clear()
-
-    is_cb = isinstance(event, CallbackQuery)
-    msg = event.message if is_cb else event
-    if is_cb:
-        await event.answer()
-
-    approved = await get_approved_reviews()
-    if not approved:
-        text = "⭐️ <b>Пока отзывов нет. Вы можете оставить первый отзыв после собеседования!</b>"
-    else:
-        text = "⭐️ <b>Отзывы участников о тренажёре:</b>\n\n"
-        for r in approved[-10:]:
-            stars = "⭐️" * int(r.get("rating", 5))
-            text += f"👤 <b>{r['full_name']}</b> ({stars})\n<i>«{r['text']}»</i>\n📅 <code>{r.get('created_at', '')}</code>\n\n"
-
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="✍️ Оставить свой отзыв", callback_data="review_start_fsm")],
-            [InlineKeyboardButton(text="◀️ В главное меню", callback_data="nav_back_to_welcome")],
-        ]
-    )
-
-    if is_cb and msg:
-        await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
-    else:
-        await msg.answer(text, reply_markup=kb, parse_mode="HTML")
+async def cmd_reviews(message: Message, state: FSMContext, bot: Bot):
+    await delete_user_message(message)
+    await state.clear()
+    text, kb = await reviews_view(0)
+    await show_screen(bot, message.chat.id, text, kb, force_new=True)
 
 
-@router.callback_query(F.data == "review_start_fsm")
-async def cb_start_review(callback: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data.startswith("reviews:") | (F.data == "btn_reviews_show"))
+async def cb_reviews(callback: CallbackQuery, state: FSMContext, bot: Bot):
     await callback.answer()
-    await callback.message.edit_text(
-        "⭐️ <b>Оцените качество и пользу AI-собеседования:</b>",
-        reply_markup=get_stars_rating_kb(),
-        parse_mode="HTML",
-    )
-    await state.set_state(ReviewStates.waiting_rating)
+    await state.clear()
+    try:
+        page = int(callback.data.split(":", 1)[1]) if ":" in callback.data else 0
+    except ValueError:
+        page = 0
+    text, kb = await reviews_view(page)
+    await show_screen(bot, _chat_id(callback), text, kb, source=callback.message)
 
 
-@router.callback_query(ReviewStates.waiting_rating, F.data.startswith("rate_star_"))
-async def cb_select_stars(callback: CallbackQuery, state: FSMContext):
-    rating = int(callback.data.replace("rate_star_", ""))
-    await state.update_data(rating=rating)
+@router.callback_query(F.data.in_({"rv_new", "review_start_fsm"}))
+async def cb_start_review(callback: CallbackQuery, state: FSMContext, bot: Bot):
     await callback.answer()
-    await callback.message.edit_text(
-        f"Вы выбрали {rating} ⭐.\n\n"
-        f"✍️ Напишите ваш отзыв текстом в чат (что понравилось, помогло ли на собеседовании, что улучшить):",
-        reply_markup=get_cancel_review_keyboard(),
-        parse_mode="HTML",
+    await state.clear()
+    if await storage.user_has_pending_review(callback.from_user.id):
+        await show_screen(
+            bot, _chat_id(callback),
+            "✍️ <b>Отзыв</b>\n\nВаш предыдущий отзыв ещё на модерации. Новый можно будет оставить после его проверки.",
+            ikb([btn("◀️ К отзывам", "reviews:0")], [menu_btn()]), source=callback.message,
+        )
+        return
+    await show_screen(
+        bot, _chat_id(callback),
+        "✍️ <b>Отзыв о тренажёре</b>\n\nОцените качество и пользу собеседования:",
+        stars_rating_kb(), source=callback.message,
     )
+
+
+@router.callback_query(F.data.startswith("rv_rate:") | F.data.startswith("rate_star_"))
+async def cb_select_stars(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    await callback.answer()
+    try:
+        rating = int(callback.data.replace("rv_rate:", "").replace("rate_star_", ""))
+    except ValueError:
+        rating = 5
+    rating = max(1, min(5, rating))
     await state.set_state(ReviewStates.waiting_text)
+    await state.update_data(rating=rating)
+    await show_screen(
+        bot, _chat_id(callback),
+        f"✍️ <b>Отзыв о тренажёре</b>\n\nВаша оценка: {_stars(rating)}\n\n"
+        "Напишите отзыв сообщением: что было полезно, помогло ли в подготовке, что стоит улучшить.",
+        review_text_kb(), source=callback.message,
+    )
 
 
-@router.message(ReviewStates.waiting_text, F.text)
-async def handle_review_text(message: Message, state: FSMContext):
+@router.message(ReviewStates.waiting_text, F.text, not_command)
+async def handle_review_text(message: Message, state: FSMContext, bot: Bot):
+    await delete_user_message(message)
+    text = message.text.strip()
     data = await state.get_data()
     rating = data.get("rating", 5)
-    text = message.text.strip()
 
-    rev_id = await add_review(
+    if len(text) < REVIEW_MIN_LENGTH:
+        await show_screen(
+            bot, message.chat.id,
+            f"✍️ <b>Отзыв о тренажёре</b>\n\nВаша оценка: {_stars(rating)}\n\n"
+            "<i>Отзыв слишком короткий.</i> Пожалуйста, напишите пару предложений.",
+            review_text_kb(),
+        )
+        return
+
+    text = text[:REVIEW_MAX_LENGTH]
+    rev_id = await storage.add_review(
         user_id=message.from_user.id,
         username=message.from_user.username,
         full_name=message.from_user.full_name,
@@ -102,38 +151,18 @@ async def handle_review_text(message: Message, state: FSMContext):
     )
     await state.clear()
 
-    back_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="⭐️ Смотреть отзывы", callback_data="btn_reviews_show")],
-            [InlineKeyboardButton(text="🏠 В главное меню", callback_data="nav_back_to_welcome")],
-        ]
+    await show_screen(
+        bot, message.chat.id,
+        "✅ <b>Спасибо за отзыв!</b>\n\nОн появится в общем списке после модерации.",
+        ikb([btn("⭐️ К отзывам", "reviews:0")], [menu_btn()]),
     )
 
-    await message.answer(
-        "✅ <b>Спасибо за обратную связь!</b>\nВаш отзыв отправлен на модерацию и скоро появится в общем списке.",
-        reply_markup=back_kb,
-        parse_mode="HTML",
+    alert = (
+        f"📬 <b>Новый отзыв #{rev_id} на модерации</b>\n\n"
+        f"👤 {esc(message.from_user.full_name)} (@{esc(message.from_user.username or '—')}), "
+        f"ID <code>{message.from_user.id}</code>\n"
+        f"Оценка: {_stars(rating)}\n\n"
+        f"<i>«{esc(text)}»</i>"
     )
-
-    stars_str = "⭐️" * rating
-    adm_alert = (
-        f"📬 <b>НОВЫЙ ОТЗЫВ #{rev_id} НА МОДЕРАЦИЮ</b>\n\n"
-        f"👤 <b>От:</b> {message.from_user.full_name} (@{message.from_user.username or 'отсутствует'})\n"
-        f"🆔 <code>{message.from_user.id}</code>\n"
-        f"⭐️ <b>Оценка:</b> {stars_str}\n\n"
-        f"💬 <b>Текст:</b>\n{text}"
-    )
-
-    from handlers.admin import get_active_admin_ids
-    target_admins = await get_active_admin_ids()
-
-    for admin_id in target_admins:
-        try:
-            await message.bot.send_message(
-                admin_id,
-                adm_alert,
-                reply_markup=get_admin_review_kb(rev_id),
-                parse_mode="HTML",
-            )
-        except Exception as e:
-            logger.error("Не удалось доставить отзыв админу %s: %s", admin_id, e)
+    for admin_id in await storage.get_active_admin_ids():
+        await notify(bot, admin_id, alert, review_notification_rows(rev_id))

@@ -9,8 +9,19 @@ from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 
-def create_candidate_docx(username: str, report_text: str, resume_draft: str, answers: list[dict]) -> io.BytesIO:
+def create_candidate_docx(
+    username: str,
+    report_text: str,
+    resume_draft: str,
+    answers: list[dict],
+    track_title: str | None = None,
+) -> io.BytesIO:
     """Создает документ с аудитом, резюме и ответами кандидата."""
+    def clean_html(text: str) -> str:
+        # Убираем любые HTML-теги Telegram и раскодируем сущности (&lt; &gt; &amp; и т.д.)
+        text = re.sub(r"</?(b|i|u|s|code|pre|blockquote)>", "", str(text or ""))
+        return html.unescape(text).strip()
+
     doc = Document()
 
     for section in doc.sections:
@@ -21,25 +32,26 @@ def create_candidate_docx(username: str, report_text: str, resume_draft: str, an
 
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    title_run = title.add_run(f"ОТЧЕТ ПО АССЕССМЕНТУ: @{username or 'Candidate'}")
+    title_run = title.add_run("ОТЧЁТ ПО ТРЕНИРОВОЧНОМУ СОБЕСЕДОВАНИЮ")
     title_run.font.name = "Calibri"
     title_run.font.size = Pt(18)
     title_run.font.bold = True
     title_run.font.color.rgb = RGBColor(0x1F, 0x49, 0x7D)
 
     sub = doc.add_paragraph()
-    sub_run = sub.add_run("Результаты технического AI-интервью и проектный черновик резюме")
+    details = []
+    if track_title:
+        details.append(f"Направление: {clean_html(track_title)}")
+    if username and username != "Candidate":
+        details.append(f"Кандидат: @{username}")
+    details.append("Итоговый разбор, черновик резюме и стенограмма собеседования")
+    sub_run = sub.add_run(" · ".join(details))
     sub_run.font.name = "Calibri"
     sub_run.font.size = Pt(10)
     sub_run.font.italic = True
     sub_run.font.color.rgb = RGBColor(0x59, 0x59, 0x59)
 
     doc.add_paragraph("―" * 50)
-
-    def clean_html(text: str) -> str:
-        # Убираем любые HTML-теги Telegram и раскодируем сущности (&lt; &gt; &amp; и т.д.)
-        text = re.sub(r"</?(b|i|u|s|code|pre|blockquote)>", "", str(text or ""))
-        return html.unescape(text).strip()
 
     # 1. Отчет
     h1 = doc.add_paragraph()
@@ -87,7 +99,7 @@ def create_candidate_docx(username: str, report_text: str, resume_draft: str, an
             p_f = doc.add_paragraph()
             score = item.get("score")
             score_note = f" (оценка: {score}/10)" if score else ""
-            f_run = p_f.add_run(f"Комментарий ментора{score_note}:\n{clean_html(item.get('feedback', ''))}")
+            f_run = p_f.add_run(f"Комментарий интервьюера{score_note}:\n{clean_html(item.get('feedback', ''))}")
             f_run.italic = True
             f_run.font.name = "Calibri"
             f_run.font.size = Pt(9.5)

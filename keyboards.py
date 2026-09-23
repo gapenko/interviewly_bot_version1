@@ -1,133 +1,174 @@
 """
-keyboards.py — клавиатуры бота с кнопками возврата и адаптацией под мобильные экраны.
+keyboards.py — клавиатуры бота.
+
+Правило навигации: на КАЖДОМ экране есть путь назад — к предыдущему меню
+и/или в главное меню (для админки — в админ-панель).
 """
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
-import config
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
 from questions import TRACKS
-
-# Раньше здесь была цепочка из трёх getattr() на случай расхождения имён переменных
-# в config.py / .env. Теперь config.py гарантирует эти два имени, поэтому просто берём их напрямую.
-ACCESS_PRICE_STARS = config.ACCESS_PRICE_STARS
-SBP_PRICE_RUB = config.SBP_PRICE_RUB
-
-remove_reply_kb = ReplyKeyboardRemove()
+from screen import dismiss_row
 
 
 # =========================================================
-# ИНТЕРВЬЮ: КАРТОЧКА ВОПРОСА
+# КОНСТРУКТОР
 # =========================================================
 
-def get_interview_toolbar() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="💡 Подсказка", callback_data="cmd_hint"),
-                InlineKeyboardButton(text="⏭ Пропустить", callback_data="cmd_skip_question"),
-            ],
-            [
-                InlineKeyboardButton(text="🔄 Начать заново", callback_data="cmd_reset_prompt"),
-                InlineKeyboardButton(text="🛑 Завершить", callback_data="cmd_finish_early"),
-            ],
-        ]
+def btn(text: str, data: str | None = None, *, url: str | None = None, pay: bool = False) -> InlineKeyboardButton:
+    if pay:
+        return InlineKeyboardButton(text=text, pay=True)
+    if url:
+        return InlineKeyboardButton(text=text, url=url)
+    return InlineKeyboardButton(text=text, callback_data=data)
+
+
+def ikb(*rows: list[InlineKeyboardButton]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[list(r) for r in rows if r])
+
+
+def menu_btn() -> InlineKeyboardButton:
+    return btn("🏠 Главное меню", "nav_menu")
+
+
+def admin_back_btn() -> InlineKeyboardButton:
+    return btn("◀️ В админ-панель", "adm_menu")
+
+
+def back_menu_kb() -> InlineKeyboardMarkup:
+    return ikb([menu_btn()])
+
+
+# =========================================================
+# ГЛАВНОЕ МЕНЮ И ВЫБОР НАПРАВЛЕНИЯ
+# =========================================================
+
+def main_menu_kb(*, in_progress: bool, has_result: bool, is_admin: bool) -> InlineKeyboardMarkup:
+    rows = []
+    if in_progress:
+        rows.append([btn("▶️ Продолжить собеседование", "interview_continue")])
+        rows.append([btn("🔄 Сменить направление", "menu_start")])
+    else:
+        rows.append([btn("🚀 Начать собеседование", "menu_start")])
+    if has_result:
+        rows.append([btn("📊 Мои результаты и резюме", "results")])
+    rows.append([btn("🎁 Бонусы и друзья", "ref"), btn("⭐️ Отзывы", "reviews:0")])
+    rows.append([btn("💬 Поддержка", "support"), btn("ℹ️ Помощь", "help")])
+    if is_admin:
+        rows.append([btn("🛠 Админ-панель", "adm_menu")])
+    return ikb(*rows)
+
+
+def tracks_kb() -> InlineKeyboardMarkup:
+    rows = [[btn(name, f"track:{key}")] for key, name in TRACKS.items()]
+    rows.append([menu_btn()])
+    return ikb(*rows)
+
+
+def rules_kb(track: str) -> InlineKeyboardMarkup:
+    return ikb(
+        [btn("🚀 Начать собеседование", f"begin:{track}")],
+        [btn("◀️ Другое направление", "menu_start")],
+        [menu_btn()],
     )
 
 
-def get_reset_confirm_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="⚠️ Да, начать заново", callback_data="cmd_reset_confirm")],
-            [InlineKeyboardButton(text="↩️ Продолжить ответ", callback_data="cmd_resume")],
-        ]
+# =========================================================
+# СОБЕСЕДОВАНИЕ
+# =========================================================
+
+def interview_kb(*, hint_shown: bool = False) -> InlineKeyboardMarkup:
+    first_row = [btn("⏭ Пропустить", "iv_skip")]
+    if not hint_shown:
+        first_row.insert(0, btn("💡 Подсказка", "iv_hint"))
+    return ikb(
+        first_row,
+        [btn("🔄 Начать заново", "iv_reset"), btn("🏁 Завершить", "iv_finish")],
+        [btn("🏠 Главное меню (прогресс сохранится)", "nav_menu")],
     )
 
 
-# =========================================================
-# ВЫБОР НАПРАВЛЕНИЯ И СТАРТ
-# =========================================================
-
-def get_tracks_keyboard() -> InlineKeyboardMarkup:
-    buttons = [[InlineKeyboardButton(text=name, callback_data=f"track_{key}")] for key, name in TRACKS.items()]
-    buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="nav_back_to_welcome")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def get_welcome_inline_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🚀 Начать собеседование", callback_data="start_choose_track")],
-            [InlineKeyboardButton(text="🎁 Рефералы и бонусы", callback_data="btn_ref_program")],
-            [InlineKeyboardButton(text="⭐️ Отзывы участников", callback_data="btn_reviews_show")],
-        ]
+def reset_confirm_kb() -> InlineKeyboardMarkup:
+    return ikb(
+        [btn("⚠️ Да, начать заново", "iv_reset_ok")],
+        [btn("↩️ Вернуться к вопросу", "iv_back")],
     )
 
 
-def get_ready_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Поехали к вопросам ➡️", callback_data="start_first_question")],
-            [InlineKeyboardButton(text="◀️ Другое направление", callback_data="start_choose_track")],
-        ]
+def finish_confirm_kb() -> InlineKeyboardMarkup:
+    return ikb(
+        [btn("🏁 Да, завершить и получить разбор", "iv_finish_ok")],
+        [btn("↩️ Вернуться к вопросу", "iv_back")],
     )
 
 
+def back_to_question_kb() -> InlineKeyboardMarkup:
+    return ikb([btn("↩️ Вернуться к вопросу", "iv_back")], [menu_btn()])
+
+
+def finished_kb() -> InlineKeyboardMarkup:
+    return ikb(
+        [btn("📄 Черновик резюме", "res_resume"), btn("✍️ Оставить отзыв", "rv_new")],
+        [btn("🔄 Пройти другое направление", "menu_start")],
+        [menu_btn()],
+    )
+
+
+def continue_kb() -> InlineKeyboardMarkup:
+    return ikb([btn("▶️ Продолжить собеседование", "interview_continue")], [menu_btn()])
+
+
 # =========================================================
-# ДИНАМИЧЕСКИЙ ЭКРАН ОПЛАТЫ
+# ОПЛАТА
 # =========================================================
 
-def get_dynamic_paywall_keyboard(
+def paywall_kb(
+    *,
     rub_price: int,
     stars_price: int,
-    has_bonuses: bool = False,
-    bonuses_applied: bool = False,
-    has_promo: bool = False,
+    bonuses_available: int,
+    bonuses_applied: bool,
+    promo_applied: bool,
 ) -> InlineKeyboardMarkup:
-    buttons = []
-
+    rows = []
     if rub_price > 0:
-        buttons.append([InlineKeyboardButton(text=f"💳 СБП / Карты — {rub_price} ₽", callback_data="pay_yookassa")])
-        buttons.append([InlineKeyboardButton(text=f"⭐️ Оплатить {stars_price} Stars", callback_data="pay_stars_invoice")])
+        rows.append([btn(f"💳 Карта / СБП — {rub_price} ₽", "pay_yk")])
+        if stars_price > 0:
+            rows.append([btn(f"⭐️ Telegram Stars — {stars_price}", "pay_stars")])
     else:
-        buttons.append([InlineKeyboardButton(text="🎉 Открыть доступ бесплатно", callback_data="pay_free_unlock")])
+        rows.append([btn("🎉 Открыть доступ бесплатно", "pay_free")])
 
-    if has_bonuses and not bonuses_applied:
-        buttons.append([InlineKeyboardButton(text="🎁 Списать бонусы со счёта", callback_data="pay_apply_bonuses")])
+    if bonuses_applied:
+        rows.append([btn("↩️ Не списывать бонусы", "pay_bonus_off")])
+    elif bonuses_available > 0:
+        rows.append([btn(f"🎁 Списать бонусы ({bonuses_available})", "pay_bonus_on")])
 
-    if not has_promo:
-        buttons.append([InlineKeyboardButton(text="🎟 Ввести промокод", callback_data="pay_enter_promocode")])
+    if promo_applied:
+        rows.append([btn("✖️ Убрать промокод", "pay_promo_off")])
+    else:
+        rows.append([btn("🎟 Ввести промокод", "pay_promo")])
 
-    buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="nav_back_to_welcome")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    rows.append([btn("🏁 Завершить собеседование", "iv_finish")])
+    rows.append([menu_btn()])
+    return ikb(*rows)
 
 
-def get_paywall_keyboard() -> InlineKeyboardMarkup:
-    return get_dynamic_paywall_keyboard(SBP_PRICE_RUB, ACCESS_PRICE_STARS)
+def back_to_paywall_kb() -> InlineKeyboardMarkup:
+    return ikb([btn("◀️ Назад к оплате", "pay_open")], [menu_btn()])
 
 
-def get_cancel_promo_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Отмена / Назад к оплате", callback_data="cancel_promocode_input")]
-        ]
+def yookassa_kb(url: str, payment_id: str) -> InlineKeyboardMarkup:
+    return ikb(
+        [btn("💳 Перейти к оплате", url=url)],
+        [btn("🔄 Я оплатил — проверить", f"check_yk:{payment_id}")],
+        [btn("◀️ Назад к способам оплаты", "pay_open")],
     )
 
 
-def get_finished_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="✍️ Оставить отзыв ментору", callback_data="review_start_fsm")],
-            [InlineKeyboardButton(text="🔄 Выбрать другое направление", callback_data="cmd_reset_confirm")],
-        ]
-    )
-
-
-def get_resume_menu_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📄 Черновик резюме", callback_data="resume_draft")],
-            [InlineKeyboardButton(text="🔍 Аудит резюме", callback_data="resume_audit")],
-            [InlineKeyboardButton(text="📥 Скачать .docx", callback_data="resume_download")],
-            [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="nav_back_to_welcome")],
-        ]
+def stars_invoice_kb(stars_price: int) -> InlineKeyboardMarkup:
+    # По правилам Telegram первая кнопка в счёте обязана быть кнопкой оплаты
+    return ikb(
+        [btn(f"Оплатить {stars_price} ⭐️", pay=True)],
+        [btn("◀️ Назад к способам оплаты", "pay_open")],
     )
 
 
@@ -135,98 +176,28 @@ def get_resume_menu_keyboard() -> InlineKeyboardMarkup:
 # ОТЗЫВЫ
 # =========================================================
 
-def get_stars_rating_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="1 ⭐", callback_data="rate_star_1"),
-                InlineKeyboardButton(text="2 ⭐", callback_data="rate_star_2"),
-                InlineKeyboardButton(text="3 ⭐", callback_data="rate_star_3"),
-                InlineKeyboardButton(text="4 ⭐", callback_data="rate_star_4"),
-                InlineKeyboardButton(text="5 ⭐", callback_data="rate_star_5"),
-            ],
-            [InlineKeyboardButton(text="◀️ Назад к отзывам", callback_data="btn_reviews_show")],
-        ]
+def stars_rating_kb() -> InlineKeyboardMarkup:
+    return ikb(
+        [btn(f"{i} ⭐", f"rv_rate:{i}") for i in range(1, 6)],
+        [btn("◀️ Назад к отзывам", "reviews:0")],
     )
 
 
-def get_cancel_review_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Отмена / Назад к отзывам", callback_data="btn_reviews_show")]
-        ]
-    )
+def review_text_kb() -> InlineKeyboardMarkup:
+    return ikb([btn("◀️ Изменить оценку", "rv_new")], [btn("✖️ Отмена", "reviews:0")])
 
 
-def get_admin_review_kb(review_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Одобрить", callback_data=f"adm_rev_ok:{review_id}"),
-                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_rev_no:{review_id}"),
-            ],
-            [
-                InlineKeyboardButton(text="🗑 Удалить из базы", callback_data=f"adm_rev_del:{review_id}"),
-            ]
-        ]
-    )
-
-
-def get_support_cancel_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Отмена / Назад", callback_data="nav_back_to_welcome")]
-        ]
-    )
+def review_notification_rows(review_id: int) -> list[list[InlineKeyboardButton]]:
+    """Кнопки модерации в уведомлении админу о новом отзыве."""
+    return [
+        [btn("✅ Опубликовать", f"adm_rvn:ok:{review_id}"), btn("🚫 Отклонить", f"adm_rvn:no:{review_id}")],
+        [btn("🗑 Удалить", f"adm_rvn:del:{review_id}")],
+    ]
 
 
 # =========================================================
-# АДМИН-ПАНЕЛЬ
+# УВЕДОМЛЕНИЯ
 # =========================================================
 
-def get_admin_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="📊 Аналитика", callback_data="admin_stats"),
-                InlineKeyboardButton(text="⭐️ Отзывы", callback_data="admin_reviews_hub"),
-            ],
-            [
-                InlineKeyboardButton(text="🔍 Поиск юзера", callback_data="admin_find_user"),
-                InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast"),
-            ],
-            [
-                InlineKeyboardButton(text="🔗 UTM-каналы", callback_data="admin_campaigns"),
-                InlineKeyboardButton(text="🎟 Промокоды", callback_data="admin_promos_hub"),
-            ],
-            [
-                InlineKeyboardButton(text="👥 Администраторы", callback_data="admin_team_hub"),
-                InlineKeyboardButton(text="💾 Выгрузка JSON", callback_data="admin_export_db"),
-            ],
-            [
-                InlineKeyboardButton(text="❌ Закрыть панель", callback_data="admin_close"),
-            ],
-        ]
-    )
-
-
-def get_user_manage_kb(target_id: int, has_paid: bool) -> InlineKeyboardMarkup:
-    paid_btn = (
-        InlineKeyboardButton(text="🔒 Забрать полный доступ", callback_data=f"adm_u_revoke:{target_id}")
-        if has_paid
-        else InlineKeyboardButton(text="👑 Выдать полный доступ (все направления)", callback_data=f"adm_u_grant:{target_id}")
-    )
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [paid_btn],
-            [
-                InlineKeyboardButton(text="➕ 150 бонусов", callback_data=f"adm_u_addb:{target_id}:150"),
-                InlineKeyboardButton(text="➖ 150 бонусов", callback_data=f"adm_u_addb:{target_id}:-150"),
-            ],
-            [
-                InlineKeyboardButton(text="🔄 Сброс прогресса", callback_data=f"adm_u_reset:{target_id}"),
-                InlineKeyboardButton(text="✉️ Написать", callback_data=f"reply_support:{target_id}"),
-            ],
-            [InlineKeyboardButton(text="◀️ Назад в админку", callback_data="admin_menu")],
-        ]
-    )
+def dismiss_kb() -> InlineKeyboardMarkup:
+    return ikb(dismiss_row())

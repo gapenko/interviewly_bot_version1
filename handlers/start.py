@@ -1,503 +1,366 @@
 """
-handlers/start.py — приветствие, выбор направления, рефералы, навигация назад и поддержка.
+handlers/start.py — главное меню, выбор направления, бонусы, помощь, поддержка,
+а также «страховочные» обработчики в самом конце цепочки:
+- любой текст вне сценариев (например, ответ на вопрос после перезапуска бота, когда FSM сброшен);
+- любые прочие сообщения (стикеры, фото…) — удаляются, чтобы не засорять чат;
+- устаревшие кнопки (от старых версий меню) — открывают главное меню вместо «вечной загрузки».
+
+Этот роутер подключается последним (см. handlers/__init__.py).
 """
-import html
 import logging
+from urllib.parse import quote
+
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import (
-    CallbackQuery,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Message,
-)
+from aiogram.types import CallbackQuery, Message
 
 import storage
-from config import (
-    ADMIN_IDS,
-    FREE_QUESTIONS_COUNT,
-    MENTOR_NAME,
-    REFERRAL_BONUS_PER_INVITE,
-    REFERRAL_FULL_ACCESS_THRESHOLD,
-)
-from keyboards import (
-    get_interview_toolbar,
-    get_ready_keyboard,
-    get_support_cancel_keyboard,
-    get_tracks_keyboard,
-    get_welcome_inline_keyboard,
-)
-from questions import TOTAL_QUESTIONS, TRACKS, get_question
+from config import REFERRAL_BONUS_PER_INVITE, REFERRAL_FULL_ACCESS_THRESHOLD
+from handlers.interview import process_answer_text, render_question
+from keyboards import back_menu_kb, btn, ikb, menu_btn, reset_confirm_kb
+from menus import get_bot_username, interview_in_progress, main_menu_view, plural, results_view, rules_view, tracks_view
+from questions import TRACKS
+from screen import DISMISS_CALLBACK, delete_user_message, esc, not_command, notify, show_screen
 from states import InterviewStates, SupportStates
-from ui_utils import build_question_message, first_name
 
 logger = logging.getLogger(__name__)
 router = Router(name="start")
 
 
-# -------------------------------------------------------------
-# СТАРТ, РЕФЕРАЛЫ И ВОССТАНОВЛЕНИЕ ПРОГРЕССА
-# -------------------------------------------------------------
+def _chat_id(callback: CallbackQuery) -> int:
+    return callback.message.chat.id if callback.message else callback.from_user.id
+
+
+async def show_main_menu(bot: Bot, chat_id: int, uid: int, state: FSMContext, *, source=None,
+                         force_new: bool = False, notice: str | None = None, intro: bool = False) -> None:
+    await state.clear()
+    text, kb = await main_menu_view(uid, notice=notice, intro=intro)
+    await show_screen(bot, chat_id, text, kb, source=source, force_new=force_new)
+
+
+# =========================================================
+# СТАРТ И ГЛАВНОЕ МЕНЮ
+# =========================================================
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext) -> None:
-    if not message.from_user:
-        return
-
-    args = message.text.split()[1] if len(message.text.split()) > 1 else None
+async def cmd_start(message: Message, state: FSMContext, bot: Bot) -> None:
+    await delete_user_message(message)
+    parts = (message.text or "").split(maxsplit=1)
+    args = parts[1].strip() if len(parts) > 1 else ""
     referrer_id = None
     campaign_tag = None
+    if args.startswith("ref_"):
+        try:
+            referrer_id = int(args[4:])
+        except ValueError:
+            pass
+    elif args.startswith("c_"):
+        campaign_tag = args[2:]
 
-    if args:
-        if args.startswith("ref_"):
-            try:
-                referrer_id = int(args.replace("ref_", ""))
-            except ValueError:
-                pass
-        elif args.startswith("c_"):
-            campaign_tag = args.replace("c_", "")
-
-    user, is_new = await storage.register_user_with_ref(
+    _, is_new = await storage.register_user_with_ref(
         telegram_id=message.from_user.id,
         username=message.from_user.username,
         full_name=message.from_user.full_name,
         referrer_id=referrer_id,
         campaign_tag=campaign_tag,
     )
-
-    if user.get("track") and not user.get("finished", False) and user.get("current_question_index", 0) > 0:
-        # Фраза «продолжаем с того места…» добавляется самим ask_current_question (режим "resume")
-        await state.set_state(InterviewStates.waiting_answer)
-        await ask_current_question(message, state, message.from_user.id, mode="resume")
-        return
-
-    await state.clear()
-    await state.set_state(InterviewStates.welcome)
-
-    ref_note = ""
-    if is_new and referrer_id:
-        ref_note = "\n🎁 <i>Вы активировали приглашение от друга!</i>\n"
-
-    welcome_text = (
-        f"👋 <b>Привет, {message.from_user.full_name}! Я AI-тренажёр для подготовки к IT-собеседованиям.</b>{ref_note}\n\n"
-        "Я помогу проверить уровень знаний, научиться отвечать структурированно и без воды, "
-        "а также подготовлю к сложным техническим и поведенческим кейсам.\n\n"
-        "Выберите действие ниже или откройте меню команд слева внизу:"
-    )
-
-    await message.answer(
-        welcome_text,
-        reply_markup=get_welcome_inline_keyboard(),
-        parse_mode="HTML",
-    )
+    notice = "Вы перешли по приглашению — добро пожаловать!" if is_new and referrer_id else None
+    await show_main_menu(bot, message.chat.id, message.from_user.id, state,
+                         force_new=True, notice=notice, intro=is_new)
 
 
-# -------------------------------------------------------------
-# НАВИГАЦИЯ: УНИВЕРСАЛЬНЫЙ ВОЗВРАТ В ГЛАВНОЕ МЕНЮ
-# -------------------------------------------------------------
+@router.message(Command("menu"))
+async def cmd_menu(message: Message, state: FSMContext, bot: Bot) -> None:
+    await delete_user_message(message)
+    await show_main_menu(bot, message.chat.id, message.from_user.id, state, force_new=True)
 
-@router.callback_query(F.data == "nav_back_to_welcome")
-async def cb_back_to_welcome(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await state.set_state(InterviewStates.welcome)
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext, bot: Bot) -> None:
+    """Выход из любого режима ввода (раньше /cancel работал только для администраторов)."""
+    await delete_user_message(message)
+    await show_main_menu(bot, message.chat.id, message.from_user.id, state, force_new=True, notice="Действие отменено.")
+
+
+@router.callback_query(F.data.in_({"nav_menu", "nav_back_to_welcome"}))
+async def cb_menu(callback: CallbackQuery, state: FSMContext, bot: Bot):
     await callback.answer()
-
-    welcome_text = (
-        f"👋 <b>Главное меню AI-тренажёра</b>\n\n"
-        "Выберите действие ниже или используйте список команд в меню:"
-    )
-
-    if callback.message:
-        await callback.message.edit_text(
-            welcome_text,
-            reply_markup=get_welcome_inline_keyboard(),
-            parse_mode="HTML",
-        )
+    await show_main_menu(bot, _chat_id(callback), callback.from_user.id, state, source=callback.message)
 
 
-# -------------------------------------------------------------
-# РЕФЕРАЛЬНАЯ ПРОГРАММА
-# -------------------------------------------------------------
+@router.callback_query(F.data == DISMISS_CALLBACK)
+async def cb_dismiss(callback: CallbackQuery):
+    """Кнопка «✖️ Скрыть» у уведомлений."""
+    await callback.answer()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
 
-@router.message(Command("ref"))
-@router.message(Command("bonus"))
-@router.callback_query(F.data == "btn_ref_program")
-async def cmd_referral(event: Message | CallbackQuery):
-    is_cb = isinstance(event, CallbackQuery)
-    target = event.message if is_cb else event
-    if is_cb:
-        await event.answer()
 
-    uid = event.from_user.id
-    user = await storage.get_user(uid)
-    balance = user.get("bonus_balance", 0)
-    refs = user.get("referrals_count", 0)
-    has_paid = user.get("paid", False)
+# =========================================================
+# ВЫБОР НАПРАВЛЕНИЯ
+# =========================================================
 
-    bot_me = await event.bot.get_me()
-    ref_link = f"https://t.me/{bot_me.username}?start=ref_{uid}"
+@router.callback_query(F.data.in_({"menu_start", "start_choose_track"}))
+async def cb_show_tracks(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    await callback.answer()
+    await state.clear()
+    user = await storage.get_user(callback.from_user.id)
+    text, kb = tracks_view(user)
+    await show_screen(bot, _chat_id(callback), text, kb, source=callback.message)
 
-    threshold = REFERRAL_FULL_ACCESS_THRESHOLD
-    progress = min(balance, threshold)
-    filled_blocks = int((progress / threshold) * 10) if threshold else 0
-    bar = "🟩" * filled_blocks + "⬜️" * (10 - filled_blocks)
-    friends_needed = threshold // REFERRAL_BONUS_PER_INVITE if REFERRAL_BONUS_PER_INVITE else 0
 
-    status_str = (
-        "👑 <b>У вас уже разблокирован полный доступ ко всем направлениям!</b>"
-        if has_paid
-        else f"🎯 До вечного доступа ко всем направлениям: <b>{max(0, threshold - balance)} бонусов</b>"
-    )
-
-    text = (
-        "🎁 <b>Реферальная программа тренажёра</b>\n\n"
-        "Приглашайте друзей и готовьтесь к собеседованиям бесплатно!\n\n"
-        f"• За каждого приглашённого друга: <b>+{REFERRAL_BONUS_PER_INVITE} бонусов</b>\n"
-        f"• При накоплении <b>{threshold} бонусов</b> (всего {friends_needed} друзей) автоматически "
-        "открывается <b>вечный доступ ко всем направлениям</b>!\n"
-        "• Бонусы можно тратить на скидку при оплате конкретного направления (1 бонус = 1 рубль скидки).\n\n"
-        f"📊 <b>Ваша статистика:</b>\n"
-        f"├ Баланс: <b>{balance} бонусов</b>\n"
-        f"├ Приглашено: <b>{refs} чел.</b>\n"
-        f"└ {bar} ({balance}/{threshold})\n\n"
-        f"{status_str}\n\n"
-        f"🔗 <b>Ваша реферальная ссылка:</b>\n"
-        f"<code>{ref_link}</code>"
-    )
-
-    share_url = f"https://t.me/share/url?url={ref_link}&text=Привет!%20Пройди%20тренировочное%20IT-собеседование%20с%20AI-ментором%20бесплатно:"
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📲 Поделиться ссылкой", url=share_url)],
-            [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="nav_back_to_welcome")],
-        ]
-    )
-
-    if is_cb and target:
-        await target.edit_text(text, reply_markup=kb, parse_mode="HTML")
+@router.callback_query(F.data.startswith("track:") | F.data.startswith("track_"))
+async def cb_track_selected(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    """Выбор направления только показывает правила — прогресс сбрасывается лишь по кнопке «Начать»."""
+    track = callback.data.split(":", 1)[1] if callback.data.startswith("track:") else callback.data[6:]
+    user = await storage.get_user(callback.from_user.id)
+    if track not in TRACKS:
+        await callback.answer("Направление не найдено")
+        text, kb = tracks_view(user)
     else:
-        await target.answer(text, reply_markup=kb, parse_mode="HTML")
+        await callback.answer()
+        text, kb = rules_view(user, track)
+    await show_screen(bot, _chat_id(callback), text, kb, source=callback.message)
 
 
-# -------------------------------------------------------------
-# КОМАНДЫ ВОССТАНОВЛЕНИЯ И СБРОСА
-# -------------------------------------------------------------
+@router.callback_query(F.data.startswith("begin:"))
+async def cb_begin(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    track = callback.data.split(":", 1)[1]
+    uid = callback.from_user.id
+    if track not in TRACKS:
+        await callback.answer("Направление не найдено")
+        user = await storage.get_user(uid)
+        text, kb = tracks_view(user)
+        await show_screen(bot, _chat_id(callback), text, kb, source=callback.message)
+        return
+    await callback.answer()
+    await storage.start_track(uid, track)
+    await state.clear()
+    await render_question(bot, _chat_id(callback), uid, state, source=callback.message, ctx={"mode": "first"})
+
+
+# =========================================================
+# ПРОДОЛЖЕНИЕ / СБРОС
+# =========================================================
 
 @router.message(Command("continue"))
-async def cmd_continue(message: Message, state: FSMContext) -> None:
-    if not message.from_user:
-        return
-
-    user = await storage.get_user(message.from_user.id, message.from_user.username)
-    track = user.get("track")
-    index = user.get("current_question_index", 0)
-    finished = user.get("finished", False)
-
-    if not track:
-        await state.set_state(InterviewStates.selecting_track)
-        await message.answer(
-            "У вас нет начатого собеседования.\nВыберите направление для старта:",
-            reply_markup=get_tracks_keyboard(),
-            parse_mode="HTML",
-        )
-        return
-
-    if finished or index >= TOTAL_QUESTIONS:
-        from handlers.interview import send_final_report
-        await send_final_report(message, state, message.from_user.id)
-        return
-
-    if index >= FREE_QUESTIONS_COUNT and not storage.user_has_track_access(user, track):
-        from handlers.interview import get_pay_inline_keyboard
-        await state.set_state(InterviewStates.waiting_payment)
-        await message.answer(
-            "🔒 Вы остановились на этапе оплаты доступа к этому направлению.",
-            reply_markup=get_pay_inline_keyboard(),
-            parse_mode="HTML",
-        )
-        return
-
-    await state.set_state(InterviewStates.waiting_answer)
-    await ask_current_question(message, state, message.from_user.id, mode="resume")
+async def cmd_continue(message: Message, state: FSMContext, bot: Bot) -> None:
+    await delete_user_message(message)
+    uid = message.from_user.id
+    user = await storage.get_user(uid, message.from_user.username)
+    if interview_in_progress(user):
+        await render_question(bot, message.chat.id, uid, state, force_new=True, ctx={"mode": "resume"})
+    elif user.get("last_result"):
+        await state.clear()
+        text, kb = results_view(user)
+        await show_screen(bot, message.chat.id, text, kb, force_new=True)
+    else:
+        await state.clear()
+        text, kb = tracks_view(user, notice="Начатого собеседования нет. Выберите направление:")
+        await show_screen(bot, message.chat.id, text, kb, force_new=True)
 
 
 @router.message(Command("reset"))
-async def cmd_reset(message: Message, state: FSMContext) -> None:
-    if not message.from_user:
-        return
-
-    await storage.reset_user(message.from_user.id)
+async def cmd_reset(message: Message, state: FSMContext, bot: Bot) -> None:
+    await delete_user_message(message)
     await state.clear()
-    await state.set_state(InterviewStates.selecting_track)
-
-    await message.answer(
-        "🔄 <b>Прогресс сброшен.</b>\n\n"
-        "Выберите направление, чтобы начать новую тренировку:",
-        reply_markup=get_tracks_keyboard(),
-        parse_mode="HTML",
+    user = await storage.get_user(message.from_user.id)
+    if not interview_in_progress(user):
+        text, kb = tracks_view(user)
+        await show_screen(bot, message.chat.id, text, kb, force_new=True)
+        return
+    await show_screen(
+        bot, message.chat.id,
+        "🔄 <b>Начать собеседование заново?</b>\n\n"
+        "Все ответы текущего собеседования будут удалены, и вы сможете выбрать направление заново. "
+        "Оплаченный доступ и бонусы сохранятся.",
+        reset_confirm_kb(), force_new=True,
     )
+
+
+# =========================================================
+# БОНУСЫ И ПРИГЛАШЕНИЯ
+# =========================================================
+
+async def referral_view(bot: Bot, uid: int):
+    user = await storage.get_user(uid)
+    balance = user.get("bonus_balance", 0)
+    refs = user.get("referrals_count", 0)
+    ref_link = f"https://t.me/{await get_bot_username(bot)}?start=ref_{uid}"
+
+    threshold = REFERRAL_FULL_ACCESS_THRESHOLD
+    filled = int(min(balance, threshold) / threshold * 10) if threshold else 0
+    bar = "🟩" * filled + "⬜️" * (10 - filled)
+    friends_needed = threshold // REFERRAL_BONUS_PER_INVITE if REFERRAL_BONUS_PER_INVITE else 0
+    status = (
+        "👑 <b>У вас открыт полный доступ ко всем направлениям.</b>"
+        if user.get("paid")
+        else f"🎯 До полного доступа ко всем направлениям: <b>{max(0, threshold - balance)} бонусов</b>"
+    )
+    text = (
+        "🎁 <b>Бонусы и приглашения</b>\n\n"
+        f"• За каждого приглашённого друга: <b>+{REFERRAL_BONUS_PER_INVITE} бонусов</b>.\n"
+        f"• При накоплении <b>{threshold} бонусов</b> (это {friends_needed} {plural(friends_needed, 'друг', 'друга', 'друзей')}) "
+        "автоматически открывается "
+        "<b>полный доступ ко всем направлениям</b>.\n"
+        "• Бонусы можно списать при оплате: 1 бонус = 1 ₽ скидки.\n\n"
+        f"📊 Баланс: <b>{balance}</b> · приглашено: <b>{refs}</b>\n"
+        f"{bar} {min(balance, threshold)}/{threshold}\n\n"
+        f"{status}\n\n"
+        f"🔗 Ваша ссылка для приглашения:\n<code>{esc(ref_link)}</code>"
+    )
+    share_text = quote("Тренажёр реального технического собеседования в IT — первые вопросы бесплатно:")
+    share_url = f"https://t.me/share/url?url={quote(ref_link, safe='')}&text={share_text}"
+    kb = ikb([btn("📲 Поделиться ссылкой", url=share_url)], [menu_btn()])
+    return text, kb
+
+
+@router.message(Command("ref", "bonus"))
+async def cmd_referral(message: Message, state: FSMContext, bot: Bot):
+    await delete_user_message(message)
+    await state.clear()
+    text, kb = await referral_view(bot, message.from_user.id)
+    await show_screen(bot, message.chat.id, text, kb, force_new=True)
+
+
+@router.callback_query(F.data.in_({"ref", "btn_ref_program"}))
+async def cb_referral(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    await callback.answer()
+    await state.clear()
+    text, kb = await referral_view(bot, callback.from_user.id)
+    await show_screen(bot, _chat_id(callback), text, kb, source=callback.message)
+
+
+# =========================================================
+# ПОМОЩЬ
+# =========================================================
+
+HELP_TEXT = (
+    "ℹ️ <b>Как пользоваться тренажёром</b>\n\n"
+    "1. Выберите направление и начните собеседование.\n"
+    "2. Отвечайте на вопросы текстом — развёрнуто, как на реальном интервью. После каждого ответа "
+    "интервьюер даёт краткую обратную связь.\n"
+    "3. Под вопросом есть кнопки: подсказка, пропуск вопроса, начать заново, завершить досрочно.\n"
+    "4. В конце вы получите итоговый разбор, черновик резюме и Word-отчёт — они сохраняются "
+    "в разделе «Мои результаты».\n\n"
+    "Доступ к полному собеседованию оплачивается отдельно для каждого направления. "
+    "Промокоды и бонусы применяются на экране оплаты.\n\n"
+    "<b>Команды</b>\n"
+    "/start — главное меню\n"
+    "/continue — продолжить собеседование\n"
+    "/results — мои результаты и резюме\n"
+    "/pay — оплата доступа\n"
+    "/ref — бонусы и приглашения\n"
+    "/reviews — отзывы\n"
+    "/reset — начать заново\n"
+    "/support — поддержка\n"
+    "/cancel — отменить текущее действие"
+)
 
 
 @router.message(Command("help"))
-async def cmd_help(message: Message) -> None:
-    help_text = (
-        "ℹ️ <b>Памятка по работе с ботом:</b>\n\n"
-        "• /start — главное меню тренажёра.\n"
-        "• /continue — продолжить начатое собеседование.\n"
-        "• /pay — оплатить доступ, ввести промокод или списать бонусы.\n"
-        "• /ref — реферальная программа (бонусы за друга).\n"
-        "• /reviews — отзывы участников.\n"
-        "• /reset — сбросить ответы и выбрать другое направление.\n"
-        "• /support — техподдержка.\n\n"
-        "💡 <i>Оплата открывает доступ к конкретному направлению собеседования. "
-        "Если захотите пройти другое направление — доступ к нему нужно будет открыть отдельно "
-        "(если у вас нет полного доступа за реферальную программу).</i>\n\n"
-        "💡 <i>В левом нижнем углу экрана всегда доступна кнопка Menu со всеми командами!</i>"
-    )
-    await message.answer(help_text, parse_mode="HTML")
+async def cmd_help(message: Message, state: FSMContext, bot: Bot) -> None:
+    await delete_user_message(message)
+    await state.clear()
+    await show_screen(bot, message.chat.id, HELP_TEXT, back_menu_kb(), force_new=True)
 
 
-# -------------------------------------------------------------
-# ТЕХНИЧЕСКАЯ ПОДДЕРЖКА
-# -------------------------------------------------------------
+@router.callback_query(F.data == "help")
+async def cb_help(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    await callback.answer()
+    await state.clear()
+    await show_screen(bot, _chat_id(callback), HELP_TEXT, back_menu_kb(), source=callback.message)
+
+
+# =========================================================
+# ПОДДЕРЖКА
+# =========================================================
+
+SUPPORT_PROMPT = (
+    "💬 <b>Поддержка</b>\n\n"
+    "Опишите вопрос или проблему одним сообщением — мы передадим его администраторам, "
+    "ответ придёт в этот чат."
+)
+
 
 @router.message(Command("support"))
-async def cmd_support(message: Message, state: FSMContext) -> None:
+async def cmd_support(message: Message, state: FSMContext, bot: Bot) -> None:
+    await delete_user_message(message)
     await state.set_state(SupportStates.waiting_support_message)
-    await message.answer(
-        "✍️ <b>Служба поддержки</b>\n\n"
-        "Опишите ваш вопрос или проблему одним сообщением.\n"
-        "Мы сразу передадим его администраторам бота.",
-        reply_markup=get_support_cancel_keyboard(),
-        parse_mode="HTML",
-    )
+    await show_screen(bot, message.chat.id, SUPPORT_PROMPT, ikb([btn("✖️ Отмена", "nav_menu")]), force_new=True)
 
 
-@router.message(SupportStates.waiting_support_message, F.text)
+@router.callback_query(F.data == "support")
+async def cb_support(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    await callback.answer()
+    await state.set_state(SupportStates.waiting_support_message)
+    await show_screen(bot, _chat_id(callback), SUPPORT_PROMPT, ikb([btn("✖️ Отмена", "nav_menu")]), source=callback.message)
+
+
+@router.message(SupportStates.waiting_support_message, F.text, not_command)
 async def process_support_message(message: Message, state: FSMContext, bot: Bot) -> None:
-    if not message.from_user or not message.text:
-        await message.answer("Пожалуйста, отправьте текстовое сообщение с описанием проблемы.")
-        return
-
-    user_info = (
-        f"👤 <b>От:</b> {message.from_user.full_name}\n"
-        f"🆔 <b>ID:</b> <code>{message.from_user.id}</code>\n"
-        f"🔗 <b>Username:</b> @{message.from_user.username if message.from_user.username else 'отсутствует'}"
-    )
-
-    admin_alert = (
-        f"📩 <b>НОВОЕ ОБРАЩЕНИЕ В ПОДДЕРЖКУ!</b>\n\n"
-        f"{user_info}\n\n"
-        f"💬 <b>Текст обращения:</b>\n{message.text}"
-    )
-
-    inline_buttons = [
-        [
-            InlineKeyboardButton(
-                text="✏️ Ответить в боте",
-                callback_data=f"reply_support:{message.from_user.id}",
-            )
-        ]
-    ]
-    if message.from_user.username:
-        inline_buttons.append(
-            [InlineKeyboardButton(text="💬 Написать в личку", url=f"https://t.me/{message.from_user.username}")]
-        )
-
-    reply_kb = InlineKeyboardMarkup(inline_keyboard=inline_buttons)
-
-    from handlers.admin import get_active_admin_ids
-    target_admins = await get_active_admin_ids()
-
-    for admin_id in target_admins:
-        try:
-            await bot.send_message(chat_id=admin_id, text=admin_alert, reply_markup=reply_kb, parse_mode="HTML")
-        except Exception as e:
-            logger.error("Не удалось доставить обращение админу %s: %s", admin_id, e)
-
+    await delete_user_message(message)
     await state.clear()
-    await message.answer(
-        "✅ <b>Ваше сообщение передано администраторам!</b>\n"
-        "Мы ответим вам прямо в этом чате в ближайшее время.",
-        parse_mode="HTML",
+    user = message.from_user
+    alert = (
+        "📩 <b>Новое обращение в поддержку</b>\n\n"
+        f"👤 {esc(user.full_name)} (@{esc(user.username or '—')}), ID <code>{user.id}</code>\n\n"
+        f"💬 {esc(message.text[:3000])}"
     )
+    rows = [[btn("✏️ Ответить", f"reply_support:{user.id}"), btn("👤 Карточка", f"adm_u:{user.id}")]]
+    if user.username:
+        rows.append([btn("💬 Написать в личку", url=f"https://t.me/{user.username}")])
 
+    delivered = False
+    for admin_id in await storage.get_active_admin_ids():
+        delivered = await notify(bot, admin_id, alert, rows) or delivered
 
-# -------------------------------------------------------------
-# ВЫБОР СПЕЦИАЛЬНОСТИ И ПРАВИЛА
-#
-# Это единственное место в проекте, которое обрабатывает выбор направления
-# (callback_data="track_*"). Раньше похожий хэндлер без фильтра состояния
-# существовал ещё и в handlers/interview.py — из-за порядка подключения роутеров
-# он перехватывал нажатие раньше и экран с правилами ниже никогда не показывался.
-# -------------------------------------------------------------
-
-@router.callback_query(F.data == "start_choose_track")
-async def cb_show_tracks(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(InterviewStates.selecting_track)
-    choose_text = (
-        "🎯 <b>Выберите направление для прохождения собеседования:</b>\n\n"
-        "<i>Вопросы будут подобраны строго под ваш стек. Доступ оплачивается отдельно "
-        "для каждого направления.</i>"
+    text = (
+        "✅ <b>Сообщение отправлено</b>\n\nОтвет администратора придёт в этот чат."
+        if delivered
+        else "⚠️ Не удалось доставить сообщение администраторам. Пожалуйста, попробуйте позже."
     )
-    if callback.message:
-        await callback.message.edit_text(choose_text, reply_markup=get_tracks_keyboard(), parse_mode="HTML")
-    await callback.answer()
+    await show_screen(bot, message.chat.id, text, back_menu_kb())
 
 
-@router.callback_query(F.data.startswith("track_"), InterviewStates.selecting_track)
-async def cb_track_selected(callback: CallbackQuery, state: FSMContext) -> None:
-    track_key = callback.data.replace("track_", "")
-    if track_key not in TRACKS:
-        await callback.answer("Некорректный выбор.")
-        return
-
-    user = await storage.get_user(callback.from_user.id)
-    user["track"] = track_key
-    user["current_question_index"] = 0
-    user["answers"] = []
-    user["finished"] = False
-    await storage.save_user(callback.from_user.id, user)
-
-    track_name = TRACKS[track_key]
-    await state.set_state(InterviewStates.ready_to_start)
-
-    already_paid = storage.user_has_track_access(user, track_key)
-    payment_note = (
-        "• Это направление у вас уже оплачено — вопросы будут доступны полностью.\n"
-        if already_paid
-        else f"• Первые <b>{FREE_QUESTIONS_COUNT} вопроса доступны бесплатно</b>, дальше — по оплате этого направления.\n"
-    )
-
-    rules_text = (
-        f"✅ <b>Выбранное направление: {track_name}</b>\n\n"
-        "📋 <b>Как будет проходить интервью:</b>\n"
-        f"• Вас ждёт <b>{TOTAL_QUESTIONS} вопросов</b>: реальный опыт, глубокий Hard Skills и Soft Skills.\n"
-        f"{payment_note}"
-        f"• Собеседование ведёт ментор <b>{html.escape(MENTOR_NAME)}</b>: после каждого ответа он коротко скажет, "
-        "что прозвучало сильно, а что стоит докрутить.\n"
-        "• В финале формируется <b>комплексный Word-отчёт (.docx)</b>.\n\n"
-        "💡 <b>Главное правило:</b>\n"
-        "Отвечайте <b>максимально развёрнуто</b>. Односложные ответы не позволят оценить ваш грейд!"
-    )
-    if callback.message:
-        await callback.message.edit_text(rules_text, reply_markup=get_ready_keyboard(), parse_mode="HTML")
-    await callback.answer()
-
-
-@router.callback_query(F.data == "start_first_question", InterviewStates.ready_to_start)
-async def cb_first_question(callback: CallbackQuery, state: FSMContext) -> None:
-    if callback.message:
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-    await callback.answer()
-    await ask_current_question(callback.message, state, callback.from_user.id)
-
-
-# -------------------------------------------------------------
-# ОТПРАВКА ТЕКУЩЕГО ВОПРОСА
-# -------------------------------------------------------------
-
-async def ask_current_question(
-    message: Message,
-    state: FSMContext,
-    user_id: int | None = None,
-    mode: str | None = None,
-) -> None:
-    """
-    Отправляет текущий вопрос от лица ментора.
-
-    mode: "first" — с приветствием (начало интервью), "resume" — с фразой «продолжаем…».
-    Если не указан: для самого первого вопроса — "first", иначе — "resume".
-    """
-    uid = user_id or (message.from_user.id if message.from_user else None)
-    if not uid:
-        return
-
-    user = await storage.get_user(uid)
-    index = user["current_question_index"]
-    track = user.get("track")
-
-    if not track:
-        await state.set_state(InterviewStates.selecting_track)
-        await message.answer("Пожалуйста, выберите направление:", reply_markup=get_tracks_keyboard(), parse_mode="HTML")
-        return
-
-    if index >= TOTAL_QUESTIONS:
-        from handlers.interview import send_final_report
-        await send_final_report(message, state, uid)
-        return
-
-    # Единая проверка пейволла для всех точек входа (/start, /continue, после оплаты и т.д.)
-    from handlers.interview import needs_payment, show_paywall
-    if needs_payment(user, index):
-        await show_paywall(message, state, track)
-        return
-
-    question = get_question(track, index)
-    await state.set_state(InterviewStates.waiting_answer)
-    await state.update_data(current_question_id=question["id"])
-
-    if mode is None:
-        mode = "first" if index == 0 and not user.get("answers") else "resume"
-
-    card = build_question_message(
-        question,
-        index,
-        mode=mode,
-        candidate_name=first_name(user.get("full_name")),
-        track_title=TRACKS.get(track),
-    )
-    await message.bot.send_message(
-        chat_id=uid,
-        text=card,
-        reply_markup=get_interview_toolbar(),
-        parse_mode="HTML",
-    )
-
-
-# -------------------------------------------------------------
-# CATCH-ALL
-# -------------------------------------------------------------
+# =========================================================
+# СТРАХОВОЧНЫЕ ОБРАБОТЧИКИ (должны быть последними)
+# =========================================================
 
 @router.message(F.text)
-async def process_unhandled_text(message: Message, state: FSMContext) -> None:
-    if not message.from_user:
-        return
+async def process_unhandled_text(message: Message, state: FSMContext, bot: Bot) -> None:
+    uid = message.from_user.id
+    user = await storage.get_user(uid)
 
-    user = await storage.get_user(message.from_user.id)
-    track = user.get("track")
-    finished = user.get("finished", False)
-    index = user.get("current_question_index", 0)
-
-    if track and not finished and index < TOTAL_QUESTIONS:
-        if index >= FREE_QUESTIONS_COUNT and not storage.user_has_track_access(user, track):
-            from handlers.interview import get_pay_inline_keyboard
-            await state.set_state(InterviewStates.waiting_payment)
-            await message.answer(
-                "🔒 Вы остановились на этапе оплаты доступа к этому направлению.",
-                reply_markup=get_pay_inline_keyboard(),
-                parse_mode="HTML",
-            )
-            return
-
-        if message.text.startswith("/"):
-            await message.answer(
-                "⚠️ Вы находитесь на этапе собеседования. Ответьте на вопрос текстом или используйте кнопки под ним.",
-                parse_mode="HTML",
-            )
-            return
-
+    if interview_in_progress(user) and not message.text.startswith("/"):
+        # FSM мог сброситься после перезапуска бота — считаем текст ответом на текущий вопрос
         await state.set_state(InterviewStates.waiting_answer)
-        from handlers.interview import handle_text_answer
-        await handle_text_answer(message, state, message.bot)
+        await process_answer_text(message, state, bot)
         return
 
-    await message.answer(
-        "❓ <b>Команда не распознана.</b>\nВоспользуйтесь кнопкой <b>Menu</b> в левом нижнем углу или кнопками ниже:",
-        reply_markup=get_welcome_inline_keyboard(),
-        parse_mode="HTML",
-    )
+    await delete_user_message(message)
+    if interview_in_progress(user):
+        await render_question(bot, message.chat.id, uid, state,
+                              notice="Неизвестная команда. Ответьте на вопрос сообщением или воспользуйтесь кнопками.")
+        return
+    await show_main_menu(bot, message.chat.id, uid, state, notice="Команда не распознана. Воспользуйтесь кнопками меню.")
+
+
+@router.message()
+async def process_other_messages(message: Message, state: FSMContext, bot: Bot) -> None:
+    """Стикеры, фото, голосовые и т.п. вне сценариев — удаляем, чтобы не засорять чат."""
+    await delete_user_message(message)
+    user = await storage.get_user(message.from_user.id)
+    if interview_in_progress(user):
+        await render_question(bot, message.chat.id, message.from_user.id, state,
+                              notice="Ответы принимаются только в текстовом виде.")
+
+
+@router.callback_query()
+async def fallback_callback(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    """Кнопка, которую никто не обработал (например, от старой версии меню)."""
+    await callback.answer("Это меню устарело — открываю главное меню.")
+    await show_main_menu(bot, _chat_id(callback), callback.from_user.id, state, source=callback.message)
